@@ -6,7 +6,7 @@ import { CustomerLayout } from '@/components/layout/customer-layout';
 import { useCart } from '@/components/cart/cart-provider';
 import { PaymentMethod } from '@/lib/types';
 import { useNumberFormat } from '@/context/number-format-context';
-import { CheckCircle2, CreditCard, Banknote, ShieldAlert, Loader2, Phone, MapPin, User, FileText } from 'lucide-react';
+import { CheckCircle2, CreditCard, Banknote, ShieldAlert, Loader2, Phone, MapPin, User, FileText, Lock } from 'lucide-react';
 
 export default function CheckoutPage() {
   const router = useRouter();
@@ -382,12 +382,19 @@ export default function CheckoutPage() {
                 </div>
               </label>
             ) : (
-              <div className="p-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/40 opacity-70">
+              <div className="p-4 rounded-2xl border-2 border-slate-200 dark:border-slate-800 bg-slate-100/70 dark:bg-slate-800/40 opacity-60 cursor-not-allowed">
                 <div className="flex items-center gap-3">
-                  <CreditCard className="w-5 h-5 text-slate-400" />
-                  <div>
-                    <span className="font-bold text-xs text-slate-500 dark:text-slate-400 block">الدفع الآجل (غير مفعل لحسابك)</span>
-                    <span className="text-[11px] text-slate-400">تواصل مع إدارة الفرماوي جروب لتفعيل الحد الائتماني لمتجرك</span>
+                  <div className="w-9 h-9 rounded-xl bg-slate-200 dark:bg-slate-700 flex items-center justify-center text-slate-500 shrink-0">
+                    <Lock className="w-5 h-5 text-slate-500 dark:text-slate-400" />
+                  </div>
+                  <div className="flex-1">
+                    <span className="font-bold text-xs text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                      <span>الدفع الآجل (غير مفعل)</span>
+                      <span className="text-[10px] bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 px-1.5 py-0.5 rounded font-mono font-semibold">مغلق</span>
+                    </span>
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400 block mt-0.5">
+                      خاصية الآجل غير مفعلة لحسابك، يرجى التواصل مع إدارة الفرماوي جروب لتفعيل الحد الائتماني
+                    </span>
                   </div>
                 </div>
               </div>

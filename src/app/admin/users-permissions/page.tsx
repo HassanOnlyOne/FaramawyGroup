@@ -118,13 +118,16 @@ export default function UsersPermissionsPage() {
   const handleSaveUser = async (user: any) => {
     setSavingId(user.id);
     try {
-      const res = await fetch('/api/admin/users-permissions', {
-        method: 'PUT',
+      const res = await fetch('/api/admin/users/update-role', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          userId: user.id,
           id: user.id,
           role: user.role,
-          permissions: user.permissions
+          permissions: user.permissions,
+          is_credit_enabled: user.is_credit_enabled,
+          credit_limit: user.credit_limit
         })
       });
 

@@ -2,7 +2,7 @@
 
 import * as React from 'react';
 import { createPortal } from 'react-dom';
-import { X, Plus, Minus, Trash2, ShoppingBag, Banknote, CreditCard } from 'lucide-react';
+import { X, Plus, Minus, Trash2, ShoppingBag, Banknote, CreditCard, Lock } from 'lucide-react';
 import { useCart } from './cart-provider';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -13,8 +13,43 @@ import Link from 'next/link';
 export function CartDrawer() {
   const { items, isOpen, toggleCart, updateQuantity, removeItem, paymentMethod, setPaymentMethod, total } = useCart();
   const [mounted, setMounted] = React.useState(false);
+  const [profile, setProfile] = React.useState<any>(null);
+  const [loadingProfile, setLoadingProfile] = React.useState(false);
 
-  React.useEffect(() => { setMounted(true); }, []);
+  React.useEffect(() => { 
+    setMounted(true); 
+    async function loadUserProfile() {
+      try {
+        setLoadingProfile(true);
+        const res = await fetch(`/api/auth/me?t=${Date.now()}`, { cache: 'no-store' });
+        if (res.ok) {
+          const json = await res.json();
+          const p = json.user || json.profile || json.data;
+          if (p) setProfile(p);
+        }
+      } catch (e) {
+        console.error('Failed to load user profile in CartDrawer', e);
+      } finally {
+        setLoadingProfile(false);
+      }
+    }
+    loadUserProfile();
+  }, []);
+
+  // Strict check for credit enablement
+  const isCreditEnabled = Boolean(
+    profile &&
+    profile.is_credit_enabled !== false &&
+    profile.credit_enabled !== false &&
+    (profile.is_credit_enabled === true || profile.credit_enabled === true || (Number(profile.credit_limit || 0) > 0))
+  );
+
+  // If credit is not enabled, automatically force payment method to cash
+  React.useEffect(() => {
+    if (profile && !isCreditEnabled && paymentMethod === 'credit') {
+      setPaymentMethod('cash');
+    }
+  }, [profile, isCreditEnabled, paymentMethod, setPaymentMethod]);
 
   if (!mounted) return null;
 
@@ -25,20 +60,20 @@ export function CartDrawer() {
       )}
       <div
         className={cn(
-          "fixed top-0 left-0 h-full w-full sm:w-[420px] bg-white border-r border-slate-200 shadow-2xl z-50 transform transition-transform duration-300 ease-in-out flex flex-col",
+          "fixed top-0 left-0 h-full w-full sm:w-[420px] bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800 shadow-2xl z-50 transform transition-transform duration-300 ease-in-out flex flex-col",
           isOpen ? "translate-x-0" : "-translate-x-full"
         )}
         dir="rtl"
       >
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-slate-200 bg-brand-50">
-          <h2 className="text-lg font-bold text-brand-800 flex items-center gap-2">
-            <ShoppingBag className="h-5 w-5 text-brand-600" />
+        <div className="flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-800 bg-brand-50 dark:bg-slate-800">
+          <h2 className="text-lg font-bold text-brand-800 dark:text-white flex items-center gap-2">
+            <ShoppingBag className="h-5 w-5 text-brand-600 dark:text-emerald-400" />
             سلة المشتريات
             <span className="text-sm font-normal text-slate-400">({items.length} صنف)</span>
           </h2>
-          <button onClick={toggleCart} className="h-8 w-8 flex items-center justify-center rounded-full hover:bg-slate-200 transition-colors">
-            <X className="h-5 w-5 text-slate-500" />
+          <button onClick={toggleCart} className="h-8 w-8 flex items-center justify-center rounded-full hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
+            <X className="h-5 w-5 text-slate-500 dark:text-slate-400" />
           </button>
         </div>
 
@@ -55,11 +90,11 @@ export function CartDrawer() {
               const moq = item.product.min_order_quantity || 1;
               const isDiscounted = item.unit_price < item.product.base_price;
               return (
-                <div key={item.product_id} className="flex gap-3 p-3 rounded-xl bg-slate-50 border border-slate-100 relative">
+                <div key={item.product_id} className="flex gap-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800 relative">
                   <div className="flex-1 flex flex-col justify-between">
                     <div className="flex justify-between items-start">
                       <div className="flex-1">
-                        <h4 className="text-sm font-bold text-slate-800 line-clamp-1">{item.product.name}</h4>
+                        <h4 className="text-sm font-bold text-slate-800 dark:text-slate-200 line-clamp-1">{item.product.name}</h4>
                         <div className="flex items-center gap-2 mt-1">
                           <span className="text-xs text-slate-400">{item.unit_price.toLocaleString('ar-EG')} ج.م / {item.product.wholesale_unit || item.product.unit}</span>
                           {isDiscounted && (
@@ -72,22 +107,22 @@ export function CartDrawer() {
                       </button>
                     </div>
                     <div className="flex items-center justify-between mt-2">
-                      <div className="flex items-center gap-1 bg-white rounded-lg border border-slate-200 h-8 px-0.5">
+                      <div className="flex items-center gap-1 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 h-8 px-0.5">
                         <button 
                           onClick={() => updateQuantity(item.product_id, item.quantity - 1)}
-                          className="h-7 w-7 flex items-center justify-center text-slate-500 hover:bg-slate-50 rounded-md"
+                          className="h-7 w-7 flex items-center justify-center text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-md"
                         >
                           <Minus className="h-3 w-3" />
                         </button>
-                        <span className="text-sm font-bold w-8 text-center text-slate-800">{item.quantity}</span>
+                        <span className="text-sm font-bold w-8 text-center text-slate-800 dark:text-slate-200">{item.quantity}</span>
                         <button 
                           onClick={() => updateQuantity(item.product_id, item.quantity + 1)}
-                          className="h-7 w-7 flex items-center justify-center text-slate-500 hover:bg-slate-50 rounded-md"
+                          className="h-7 w-7 flex items-center justify-center text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-md"
                         >
                           <Plus className="h-3 w-3" />
                         </button>
                       </div>
-                      <span className="font-bold text-brand-700">{item.total_price.toLocaleString('ar-EG')} ج.م</span>
+                      <span className="font-bold text-brand-700 dark:text-emerald-400 font-mono">{item.total_price.toLocaleString('ar-EG')} ج.م</span>
                     </div>
                   </div>
                 </div>
@@ -98,34 +133,59 @@ export function CartDrawer() {
 
         {/* Footer */}
         {items.length > 0 && (
-          <div className="p-4 border-t border-slate-200 bg-slate-50 space-y-3">
+          <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/70 space-y-3">
             {/* Payment Method Selector */}
-            <div className="flex gap-2">
-              <button
-                onClick={() => setPaymentMethod('cash')}
-                className={cn(
-                  'flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl border-2 text-sm font-bold transition-all',
-                  paymentMethod === 'cash' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-slate-200 bg-white text-slate-400'
-                )}
-              >
-                <Banknote className="h-4 w-4" />
-                كاش
-              </button>
-              <button
-                onClick={() => setPaymentMethod('credit')}
-                className={cn(
-                  'flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl border-2 text-sm font-bold transition-all',
-                  paymentMethod === 'credit' ? 'border-orange-500 bg-orange-50 text-orange-700' : 'border-slate-200 bg-white text-slate-400'
-                )}
-              >
-                <CreditCard className="h-4 w-4" />
-                أجل
-              </button>
+            <div className="space-y-1.5">
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPaymentMethod('cash')}
+                  className={cn(
+                    'flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl border-2 text-sm font-bold transition-all',
+                    paymentMethod === 'cash' 
+                      ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300' 
+                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 hover:bg-slate-100'
+                  )}
+                >
+                  <Banknote className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+                  <span>كاش عند الاستلام</span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!isCreditEnabled}
+                  onClick={() => {
+                    if (isCreditEnabled) setPaymentMethod('credit');
+                  }}
+                  title={!isCreditEnabled ? 'خاصية الآجل غير مفعلة لحسابك، تواصل مع الإدارة' : 'دفع آجل'}
+                  className={cn(
+                    'flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl border-2 text-sm font-bold transition-all relative',
+                    isCreditEnabled
+                      ? paymentMethod === 'credit'
+                        ? 'border-orange-500 bg-orange-50 dark:bg-orange-950/60 text-orange-700 dark:text-orange-300 shadow-sm'
+                        : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 hover:bg-slate-100'
+                      : 'opacity-50 cursor-not-allowed bg-slate-100 dark:bg-slate-800/80 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-slate-700'
+                  )}
+                >
+                  {!isCreditEnabled ? (
+                    <Lock className="h-3.5 w-3.5 text-slate-400 dark:text-slate-500" />
+                  ) : (
+                    <CreditCard className="h-4 w-4 text-orange-600 dark:text-orange-400" />
+                  )}
+                  <span>دفع آجل</span>
+                </button>
+              </div>
+
+              {!isCreditEnabled && (
+                <p className="text-[10px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/50 p-1.5 rounded-lg border border-amber-200 dark:border-amber-800/60 text-center font-medium">
+                  🔒 خاصية الآجل غير مفعلة لحسابك، يرجى التواصل مع الإدارة
+                </p>
+              )}
             </div>
             
-            <div className="flex items-center justify-between text-lg">
-              <span className="font-medium text-slate-600">الإجمالي</span>
-              <span className="font-black text-brand-700 text-xl">{total.toLocaleString('ar-EG')} ج.م</span>
+            <div className="flex items-center justify-between text-base">
+              <span className="font-bold text-slate-700 dark:text-slate-300">إجمالي السلة</span>
+              <span className="font-black text-brand-700 dark:text-emerald-400 text-xl font-mono">{total.toLocaleString('ar-EG')} ج.م</span>
             </div>
             <Link href="/checkout" onClick={toggleCart}>
               <Button variant="primary" size="lg" className="w-full btn-accent text-base">
