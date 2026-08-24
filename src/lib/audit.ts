@@ -60,7 +60,8 @@ export async function logAction({
   actionType,
   category,
   details,
-  user
+  user,
+  ipAddress: customIp
 }: LogActionParams) {
   try {
     const adminClient = createAdminClient();
@@ -69,20 +70,22 @@ export async function logAction({
     let userId = user?.id || null;
     let userName = user?.name || '';
     let userRole = user?.role || '';
-    let ipAddress = '127.0.0.1';
+    let ipAddress = customIp || '127.0.0.1';
 
     // 1. Resolve client IP from request headers if available
-    try {
-      const headerList = await headers();
-      const forwardedFor = headerList.get('x-forwarded-for');
-      const realIp = headerList.get('x-real-ip');
-      if (forwardedFor) {
-        ipAddress = forwardedFor.split(',')[0].trim();
-      } else if (realIp) {
-        ipAddress = realIp.trim();
+    if (!customIp) {
+      try {
+        const headerList = await headers();
+        const forwardedFor = headerList.get('x-forwarded-for');
+        const realIp = headerList.get('x-real-ip');
+        if (forwardedFor) {
+          ipAddress = forwardedFor.split(',')[0].trim();
+        } else if (realIp) {
+          ipAddress = realIp.trim();
+        }
+      } catch {
+        // headers() may not be available in non-request contexts
       }
-    } catch {
-      // headers() may not be available in non-request contexts
     }
 
     // 2. Fetch authenticated user details if not provided
@@ -138,7 +141,7 @@ export async function logAction({
     memoryAuditLogs.unshift(newLog);
     if (memoryAuditLogs.length > 300) memoryAuditLogs.pop();
 
-    // Insert into database
+    // Insert into database using adminClient (service role)
     let { data, error } = await adminClient.from('audit_logs').insert([newLog]).select().maybeSingle();
     if (error || !data) {
       const fb = await supabase.from('audit_logs').insert([newLog]).select().maybeSingle();
@@ -149,6 +152,39 @@ export async function logAction({
   } catch (err) {
     console.error('Audit Log Error:', err);
     return null;
+  }
+}
+
+/**
+ * Universal recordAuditLog function working on both Client and Server
+ */
+export async function recordAuditLog(params: {
+  action_type: string;
+  category: string;
+  details: string;
+  user_name?: string;
+  user_role?: string;
+}) {
+  try {
+    if (typeof window !== 'undefined') {
+      await fetch('/api/admin/audit-log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      });
+    } else {
+      await logAction({
+        actionType: params.action_type,
+        category: params.category as AuditCategory,
+        details: params.details,
+        user: {
+          name: params.user_name,
+          role: params.user_role
+        }
+      });
+    }
+  } catch (err) {
+    console.error('Audit Log Error:', err);
   }
 }
 

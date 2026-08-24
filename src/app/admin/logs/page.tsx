@@ -1,9 +1,16 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { useNumberFormat } from '@/context/number-format-context';
-import { History, Search, Filter, Shield, ShoppingCart, Receipt, Banknote, Users, RefreshCw, Loader2, CheckCircle2, ShieldCheck, Tag } from 'lucide-react';
+import { createClient } from '@/lib/supabase/client';
+import { 
+  History, 
+  Search, 
+  RefreshCw, 
+  Loader2, 
+  Tag 
+} from 'lucide-react';
 
 const CATEGORIES = [
   { id: 'all', label: 'كافة العمليات' },
@@ -19,27 +26,54 @@ export default function AuditLogsPage() {
   const { formatNumber } = useNumberFormat();
   const [logs, setLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState('all');
   const [search, setSearch] = useState('');
 
-  useEffect(() => {
-    fetchLogs();
-  }, [selectedCategory]);
-
-  async function fetchLogs() {
-    setLoading(true);
+  const fetchLogs = useCallback(async (isBackground = false) => {
+    if (!isBackground) setRefreshing(true);
     try {
-      const res = await fetch(`/api/admin/logs?category=${encodeURIComponent(selectedCategory)}&t=${Date.now()}`);
+      let res = await fetch(`/api/admin/audit-log?category=${encodeURIComponent(selectedCategory)}&t=${Date.now()}`);
+      if (!res.ok) {
+        res = await fetch(`/api/admin/logs?category=${encodeURIComponent(selectedCategory)}&t=${Date.now()}`);
+      }
       if (res.ok) {
         const json = await res.json();
-        setLogs(json.data || []);
+        setLogs(json.data || json.logs || []);
       }
     } catch (err) {
-      console.error(err);
+      console.error('Fetch Logs Error:', err);
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
-  }
+  }, [selectedCategory]);
+
+  useEffect(() => {
+    fetchLogs();
+
+    // 1. Polling interval every 5 seconds
+    const interval = setInterval(() => {
+      fetchLogs(true);
+    }, 5000);
+
+    // 2. Refresh on window focus
+    const onFocus = () => fetchLogs(true);
+    window.addEventListener('focus', onFocus);
+
+    // 3. Supabase Realtime channel subscription on audit_logs
+    const supabase = createClient();
+    const channel = supabase
+      .channel('audit-logs-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, () => fetchLogs(true))
+      .subscribe();
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      supabase.removeChannel(channel);
+    };
+  }, [fetchLogs]);
 
   const filteredLogs = logs.filter(l => {
     if (!search.trim()) return true;
@@ -62,13 +96,14 @@ export default function AuditLogsPage() {
               <History className="w-8 h-8 text-brand-600 dark:text-emerald-400" />
               <span>سجل حركات النظام والعمليات (Audit Log)</span>
             </h1>
-            <p className="text-slate-500 dark:text-slate-400 text-xs mt-1">تتبع وتدقيق كافة التعديلات، فواتير البيع والشراء، التحصيلات، وتغييرات الصلاحيات</p>
+            <p className="text-slate-500 dark:text-slate-400 text-xs mt-1">تتبع وتدقيق فوري لكافة التعديلات، فواتير البيع والشراء، التحصيلات، وتغييرات الصلاحيات</p>
           </div>
           <button
-            onClick={fetchLogs}
+            onClick={() => fetchLogs(false)}
+            disabled={refreshing}
             className="btn-secondary flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold shadow-sm"
           >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
             <span>تحديث السجل</span>
           </button>
         </div>
@@ -106,7 +141,7 @@ export default function AuditLogsPage() {
         {/* Logs Table */}
         <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden">
           <div className="p-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 flex items-center justify-between">
-            <h2 className="font-bold text-slate-900 dark:text-white text-base">جدول السجل الزمني</h2>
+            <h2 className="font-bold text-slate-900 dark:text-white text-base">جدول السجل الزمني الفوري</h2>
             <span className="text-xs font-bold text-slate-500 dark:text-slate-400">{formatNumber(filteredLogs.length)} حركة مسجلة</span>
           </div>
 
