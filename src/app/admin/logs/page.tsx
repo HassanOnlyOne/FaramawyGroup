@@ -1,0 +1,181 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { AdminLayout } from '@/components/layout/admin-layout';
+import { useNumberFormat } from '@/context/number-format-context';
+import { History, Search, Filter, Shield, ShoppingCart, Receipt, Banknote, Users, RefreshCw, Loader2, CheckCircle2 } from 'lucide-react';
+
+const CATEGORIES = [
+  { id: 'all', label: 'كافة العمليات' },
+  { id: 'sales', label: 'المبيعات والفواتير' },
+  { id: 'purchases', label: 'المشتريات والموردين' },
+  { id: 'treasury', label: 'الخزينة والتحصيلات' },
+  { id: 'customers', label: 'الأجل والعملاء' },
+  { id: 'security', label: 'الأمان والصلاحيات' },
+];
+
+export default function AuditLogsPage() {
+  const { formatNumber } = useNumberFormat();
+  const [logs, setLogs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedCategory, setSelectedCategory] = useState('all');
+  const [search, setSearch] = useState('');
+
+  useEffect(() => {
+    fetchLogs();
+  }, [selectedCategory]);
+
+  async function fetchLogs() {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/admin/logs?category=${selectedCategory}&t=${Date.now()}`);
+      if (res.ok) {
+        const json = await res.json();
+        setLogs(json.data || []);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const filteredLogs = logs.filter(l => {
+    if (!search.trim()) return true;
+    const q = search.toLowerCase();
+    return (
+      (l.user_name || '').toLowerCase().includes(q) ||
+      (l.action_type || '').toLowerCase().includes(q) ||
+      (l.details || '').toLowerCase().includes(q)
+    );
+  });
+
+  return (
+    <AdminLayout>
+      <div className="space-y-6">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <div>
+            <h1 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white flex items-center gap-3">
+              <History className="w-8 h-8 text-brand-600 dark:text-emerald-400" />
+              سجل حركات النظام والعمليات (Audit Log)
+            </h1>
+            <p className="text-slate-500 dark:text-slate-400 text-xs mt-1">تتبع وتدقيق كافة التعديلات، فواتير البيع والشراء، التحصيلات، وتغييرات الصلاحيات</p>
+          </div>
+          <button
+            onClick={fetchLogs}
+            className="btn-secondary flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold shadow-sm"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            <span>تحديث السجل</span>
+          </button>
+        </div>
+
+        {/* Filter Bar */}
+        <div className="bg-white dark:bg-slate-900 rounded-3xl p-5 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
+          <div className="flex flex-wrap gap-2">
+            {CATEGORIES.map(cat => (
+              <button
+                key={cat.id}
+                onClick={() => setSelectedCategory(cat.id)}
+                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+                  selectedCategory === cat.id
+                    ? 'bg-brand-700 dark:bg-emerald-600 text-white shadow-md'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                }`}
+              >
+                {cat.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="relative">
+            <input
+              type="text"
+              placeholder="بحث في تفاصيل العملية، اسم القائم بالحركة، أو نوع الإجراء..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="w-full pl-4 pr-10 py-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:border-brand-500"
+            />
+            <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-3" />
+          </div>
+        </div>
+
+        {/* Logs Table */}
+        <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden">
+          <div className="p-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 flex items-center justify-between">
+            <h2 className="font-bold text-slate-900 dark:text-white text-base">جدول السجل الزمني</h2>
+            <span className="text-xs font-bold text-slate-500 dark:text-slate-400">{formatNumber(filteredLogs.length)} حركة مسجلة</span>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-right text-sm">
+              <thead className="bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold text-xs border-b border-slate-200 dark:border-slate-700">
+                <tr>
+                  <th className="p-4 whitespace-nowrap">التاريخ والوقت</th>
+                  <th className="p-4 whitespace-nowrap">المستخدم والرتبة</th>
+                  <th className="p-4 whitespace-nowrap">نوع العملية</th>
+                  <th className="p-4 whitespace-nowrap">التفاصيل والتغييرات</th>
+                  <th className="p-4 whitespace-nowrap">عنوان IP</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                {loading ? (
+                  <tr>
+                    <td colSpan={5} className="p-10 text-center text-slate-500 dark:text-slate-400">
+                      <Loader2 className="w-8 h-8 animate-spin mx-auto text-brand-600 dark:text-emerald-400" />
+                    </td>
+                  </tr>
+                ) : filteredLogs.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="p-10 text-center text-slate-500 dark:text-slate-400 font-medium">
+                      لا توجد حركات مسجلة مطابقة للبحث
+                    </td>
+                  </tr>
+                ) : (
+                  filteredLogs.map(log => {
+                    const isOwner = log.user_role?.includes('Super') || log.user_role?.includes('مالك');
+                    const isAdmin = log.user_role?.includes('مدير') || log.user_role?.includes('Admin');
+
+                    return (
+                      <tr key={log.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
+                        <td className="p-4 font-mono text-xs text-slate-600 dark:text-slate-400 whitespace-nowrap">
+                          {new Date(log.created_at).toLocaleDateString('ar-EG', { year: 'numeric', month: 'short', day: 'numeric' })}
+                          <span className="block text-[10px] text-slate-400">
+                            {new Date(log.created_at).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                          </span>
+                        </td>
+                        <td className="p-4 whitespace-nowrap">
+                          <span className="font-bold text-slate-900 dark:text-white block text-xs">{log.user_name}</span>
+                          <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold mt-0.5 ${
+                            isOwner 
+                              ? 'bg-purple-100 text-purple-800 dark:bg-purple-950/60 dark:text-purple-300' 
+                              : isAdmin 
+                              ? 'bg-blue-100 text-blue-800 dark:bg-blue-950/60 dark:text-blue-300' 
+                              : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                          }`}>
+                            {log.user_role}
+                          </span>
+                        </td>
+                        <td className="p-4 whitespace-nowrap">
+                          <span className="font-bold text-slate-900 dark:text-white text-xs bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 inline-block">
+                            {log.action_type}
+                          </span>
+                        </td>
+                        <td className="p-4 text-xs text-slate-800 dark:text-slate-200 leading-relaxed max-w-md">
+                          {log.details}
+                        </td>
+                        <td className="p-4 font-mono text-xs text-slate-400 whitespace-nowrap">
+                          {log.ip_address || '127.0.0.1'}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </AdminLayout>
+  );
+}
