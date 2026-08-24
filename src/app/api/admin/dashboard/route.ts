@@ -5,6 +5,31 @@ import { NextResponse } from 'next/server';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+function isSameDay(d1: Date, d2: Date): boolean {
+  return (
+    d1.getFullYear() === d2.getFullYear() &&
+    d1.getMonth() === d2.getMonth() &&
+    d1.getDate() === d2.getDate()
+  );
+}
+
+function normalizeStatus(status: any): string {
+  const s = String(status || '').trim().toLowerCase();
+  if (['completed', 'مكتمل', 'delivered', 'تم التوصيل', 'تم الاستلام'].includes(s)) return 'completed';
+  if (['pending', 'قيد الانتظار', 'new', 'جديد'].includes(s)) return 'pending';
+  if (['approved', 'تمت الموافقة', 'processing', 'قيد التجهيز', 'جاري التجهيز'].includes(s)) return 'approved';
+  if (['out_for_delivery', 'delivering', 'shipping', 'جاري التوصيل', 'في الطريق'].includes(s)) return 'out_for_delivery';
+  if (['cancelled', 'ملغي', 'ملغى'].includes(s)) return 'cancelled';
+  if (['returned', 'مرتجع'].includes(s)) return 'returned';
+  return s;
+}
+
+function normalizePaymentMethod(method: any): string {
+  const m = String(method || '').trim().toLowerCase();
+  if (['credit', 'آجل', 'أجل', 'اجل'].includes(m)) return 'credit';
+  return 'cash';
+}
+
 export async function GET() {
   try {
     const adminClient = createAdminClient();
@@ -39,83 +64,91 @@ export async function GET() {
       purchases = fb.data || [];
     }
 
+    let { data: directPayments } = await adminClient.from('payments').select('*');
+    if (!directPayments) {
+      const fb = await supabase.from('payments').select('*');
+      directPayments = fb.data || [];
+    }
+
+    let { data: customerPayments } = await adminClient.from('customer_payments').select('*');
+    if (!customerPayments) {
+      customerPayments = [];
+    }
+
     const safeOrders = Array.isArray(orders) ? orders : [];
     const safeProfiles = Array.isArray(profiles) ? profiles : [];
     const safeProducts = Array.isArray(products) ? products : [];
     const safePurchases = Array.isArray(purchases) ? purchases : [];
+    const safePayments = [...(Array.isArray(directPayments) ? directPayments : []), ...(Array.isArray(customerPayments) ? customerPayments : [])];
 
     // 2. Pure Accounting Calculations
+    const now = new Date();
     const totalOrdersCount = safeOrders.length;
-    const pendingOrdersCount = safeOrders.filter((o: any) => o.status === 'pending').length;
 
-    // Total Revenue: مجموع المبيعات المحصلة فعلياً من الطلبات المكتملة
-    const completedOrders = safeOrders.filter((o: any) => o.status === 'completed');
+    // 3. Card: "طلبات جديدة قيد الانتظار" (pending / new / قيد الانتظار)
+    const pendingOrdersCount = safeOrders.filter((o: any) => {
+      const norm = normalizeStatus(o.status);
+      return norm === 'pending';
+    }).length;
+
+    // 4. Card: "إجمالي المبيعات (المحصلة)" (Completed Orders total value + completed collections)
+    const completedOrders = safeOrders.filter((o: any) => {
+      const norm = normalizeStatus(o.status);
+      return norm === 'completed';
+    });
+
     const totalRevenue = completedOrders.reduce((sum: number, o: any) => {
-      return sum + Number(o.paid_amount || 0);
+      const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || o.paid_amount || 0));
+      return sum + ordTotal;
     }, 0);
 
-    // Total Receivables: مجموع المديونيات الحقيقية من جدول profiles
+    // 5. Card: "تحصيلات اليوم" (Completed Cash Orders created today + Payment receipts registered today)
+    const todayCashOrders = completedOrders.filter((o: any) => {
+      const pMethod = normalizePaymentMethod(o.payment_method);
+      if (pMethod !== 'cash') return false;
+      const d = new Date(o.created_at || o.updated_at);
+      return isSameDay(d, now);
+    });
+
+    const todayOrderCashTotal = todayCashOrders.reduce((sum: number, o: any) => {
+      const cashAmount = Number(o.paid_amount !== undefined && o.paid_amount !== null && o.paid_amount > 0 ? o.paid_amount : (o.total || o.total_amount || 0));
+      return sum + cashAmount;
+    }, 0);
+
+    const todayReceiptsTotal = safePayments.filter((p: any) => {
+      const d = new Date(p.payment_date || p.created_at);
+      return isSameDay(d, now);
+    }).reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
+
+    const todayCollections = todayOrderCashTotal + todayReceiptsTotal;
+
+    // 6. Card: "إجمالي مديونيات العملاء" (Sum current_debt from profiles for debt > 0)
     const totalReceivables = safeProfiles.reduce((sum: number, p: any) => {
       const debt = Number(p.current_debt !== undefined && p.current_debt !== null ? p.current_debt : (p.previous_balance || 0));
-      return sum + Math.max(0, debt);
+      return sum + (debt > 0 ? debt : 0);
     }, 0);
 
-    // Active Credit Customers: عدد العملاء الذين لديهم مديونية فعلية > 0
+    // 7. Card: "عملاء الآجل النشطون"
     const creditCustomersCount = safeProfiles.filter((p: any) => {
       const debt = Number(p.current_debt !== undefined && p.current_debt !== null ? p.current_debt : (p.previous_balance || 0));
       return debt > 0;
     }).length;
 
-    // Total Supplier Payables: مستحقات الموردين من فواتير المشتريات وجدول suppliers
+    // 8. Card: "مستحقات الموردين (آجل)"
     const totalSupplierPayables = safePurchases.reduce((sum: number, p: any) => {
       const tot = Number(p.total !== undefined && p.total !== null ? p.total : (p.total_amount || 0));
       const pd = Number(p.paid_amount || 0);
       const rem = Number(p.remaining_amount !== undefined && p.remaining_amount !== null ? p.remaining_amount : Math.max(0, tot - pd));
-      return sum + rem;
+      return sum + Math.max(0, rem);
     }, 0);
 
-    // Today Collections: (المقدمات النقدية المسددة كاش من فواتير اليوم orders.paid_amount) + (سندات القبض النقدية المسجلة اليوم)
-    const today = new Date().toISOString().split('T')[0];
-    
-    // 1. Order downpayments collected today from non-cancelled orders
-    const activeOrders = safeOrders.filter((o: any) => o.status !== 'cancelled' && o.status !== 'returned');
-    const orderCashToday = activeOrders
-      .filter((o: any) => {
-        const orderDateStr = String(o.created_at || o.updated_at || '').split('T')[0];
-        return orderDateStr === today;
-      })
-      .reduce((sum: number, o: any) => sum + Number(o.paid_amount || 0), 0);
-
-    // 2. Customer payments / receipts registered today
-    let customerPaymentsToday = 0;
-
-    try {
-      const { data: custPayments } = await adminClient
-        .from('customer_payments')
-        .select('amount, created_at')
-        .gte('created_at', `${today}T00:00:00.000Z`);
-
-      if (custPayments && custPayments.length > 0) {
-        customerPaymentsToday += custPayments.reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
-      }
-    } catch {}
-
-    try {
-      const { data: directPayments } = await adminClient
-        .from('payments')
-        .select('amount, created_at, payment_date')
-        .gte('created_at', `${today}T00:00:00.000Z`);
-
-      if (directPayments && directPayments.length > 0) {
-        customerPaymentsToday += directPayments.reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
-      }
-    } catch {}
-
-    const todayCollections = orderCashToday + customerPaymentsToday;
-
-    // Inventory metrics
+    // 9. Card: "تنبيهات نواقص المخزون" (stock_quantity <= threshold or <= 5)
     const totalProductsCount = safeProducts.length;
-    const lowStockCount = safeProducts.filter((p: any) => Number(p.stock_quantity || 0) < 10 && p.is_active !== false).length;
+    const lowStockCount = safeProducts.filter((p: any) => {
+      const stock = Number(p.stock_quantity !== undefined ? p.stock_quantity : (p.stock || 0));
+      const threshold = Number(p.low_stock_threshold || p.min_stock_threshold || 5);
+      return stock <= threshold && p.is_active !== false;
+    }).length;
 
     const statsObj = {
       total_orders: totalOrdersCount,
