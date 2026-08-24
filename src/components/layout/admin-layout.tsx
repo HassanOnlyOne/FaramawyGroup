@@ -83,6 +83,23 @@ import { createClient } from '@/lib/supabase/client';
 export function AdminLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
+  const [currentProfile, setCurrentProfile] = React.useState<any>(null);
+
+  React.useEffect(() => {
+    async function loadAdminUser() {
+      try {
+        const res = await fetch(`/api/auth/me?t=${Date.now()}`, { cache: 'no-store' });
+        if (res.ok) {
+          const json = await res.json();
+          const p = json.profile || json.user || json.data;
+          if (p) setCurrentProfile(p);
+        }
+      } catch (err) {
+        console.error('Failed to load admin profile', err);
+      }
+    }
+    loadAdminUser();
+  }, []);
 
   const handleLogout = async () => {
     try {
@@ -203,11 +220,17 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
             <ThemeToggle />
             <div className="flex items-center gap-3 border-r border-slate-200 dark:border-slate-800 pr-3">
               <div className="h-9 w-9 rounded-xl gradient-primary flex items-center justify-center text-white font-black text-sm shadow">
-                أ
+                {(currentProfile?.full_name || currentProfile?.store_name || 'أ').trim().charAt(0)}
               </div>
               <div className="hidden sm:block text-xs">
-                <p className="font-bold text-slate-800 dark:text-slate-100">المدير العام</p>
-                <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">لوحة الإدارة</p>
+                <p className="font-bold text-slate-800 dark:text-slate-100 max-w-[150px] truncate">
+                  {currentProfile?.full_name || currentProfile?.store_name || 'المدير العام'}
+                </p>
+                <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">
+                  {currentProfile?.role === 'super_owner' 
+                    ? 'مالك النظام' 
+                    : (currentProfile?.role === 'admin' ? 'المدير العام' : (currentProfile?.role === 'delegate' ? 'مندوب مبيعات' : 'فريق العمل'))}
+                </p>
               </div>
             </div>
           </div>

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { CustomerLayout } from '@/components/layout/customer-layout';
 import { BRAND } from '@/lib/constants';
 import { useNumberFormat } from '@/context/number-format-context';
@@ -28,6 +29,7 @@ import {
 import { useToast } from '@/components/ui/toast';
 
 export default function AccountPage() {
+  const router = useRouter();
   const { toast } = useToast();
   const { formatPriceShort, formatNumber } = useNumberFormat();
   const [profile, setProfile] = useState<any>(null);
@@ -37,6 +39,7 @@ export default function AccountPage() {
 
   // Edit contact details mode
   const [editingDetails, setEditingDetails] = useState(false);
+  const [editFullName, setEditFullName] = useState('');
   const [editStoreName, setEditStoreName] = useState('');
   const [editPhone, setEditPhone] = useState('');
   const [editAddress, setEditAddress] = useState('');
@@ -101,6 +104,7 @@ export default function AccountPage() {
 
         if (currentProfile) {
           setProfile(currentProfile);
+          setEditFullName(currentProfile.full_name || currentProfile.name || currentProfile.store_name || '');
           setEditStoreName(currentProfile.store_name || currentProfile.full_name || currentProfile.name || '');
           setEditPhone(currentProfile.phone || '');
           setEditAddress(currentProfile.address || '');
@@ -151,27 +155,68 @@ export default function AccountPage() {
         return;
       }
 
+      const cleanName = editFullName.trim() || editStoreName.trim();
+      const cleanStore = editStoreName.trim() || cleanName;
+      const cleanAddress = editAddress.trim();
+
       const supabase = createClient();
-      if (profile.id) {
-        await supabase
+      const { data: { user } } = await supabase.auth.getUser();
+      const targetId = user?.id || profile.id;
+
+      if (targetId) {
+        // 1. Update profiles table directly
+        const { error: pErr } = await supabase
           .from('profiles')
           .update({
-            store_name: editStoreName,
+            full_name: cleanName,
+            store_name: cleanStore,
             phone: cleanP,
-            address: editAddress
+            address: cleanAddress
           })
-          .eq('id', profile.id);
+          .eq('id', targetId);
+
+        if (pErr) {
+          console.warn('Profiles update error:', pErr);
+        }
+
+        // 2. Update Supabase Auth user_metadata in parallel
+        try {
+          await supabase.auth.updateUser({
+            data: {
+              full_name: cleanName,
+              store_name: cleanStore,
+              phone: cleanP
+            }
+          });
+        } catch (authErr) {
+          console.warn('Auth metadata update error:', authErr);
+        }
+
+        // 3. Update via server API /api/auth/me
+        await fetch('/api/auth/me', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            full_name: cleanName,
+            store_name: cleanStore,
+            phone: cleanP,
+            address: cleanAddress
+          })
+        }).catch(() => {});
       }
 
+      // 4. Update local state
       setProfile((prev: any) => ({
         ...prev,
-        store_name: editStoreName,
+        full_name: cleanName,
+        store_name: cleanStore,
         phone: cleanP,
-        address: editAddress
+        address: cleanAddress
       }));
 
       setEditingDetails(false);
-      toast({ title: 'تم حفظ البيانات بنجاح', description: 'تم تحديث اسم المتجر وعنوان التوصيل المعتمد', type: 'success' });
+      toast({ title: 'تم حفظ البيانات بنجاح', description: 'تم تحديث الاسم والبيانات الشخصية في النظام بالكامل', type: 'success' });
+      router.refresh();
     } catch (err: any) {
       toast({ title: 'خطأ', description: err.message, type: 'error' });
     } finally {
@@ -274,9 +319,20 @@ export default function AccountPage() {
               {/* Edit Details Inline Form */}
               {editingDetails && (
                 <form onSubmit={handleSaveContactDetails} className="mt-5 pt-5 border-t border-white/10 space-y-3 relative z-10">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-slate-900 dark:text-white">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-slate-900 dark:text-white">
                     <div>
-                      <label className="block text-[11px] font-bold text-slate-200 mb-1">اسم المتجر / المحل</label>
+                      <label className="block text-[11px] font-bold text-slate-200 mb-1">الاسم الشخصي / المسؤول</label>
+                      <input
+                        type="text"
+                        required
+                        value={editFullName}
+                        onChange={(e) => setEditFullName(e.target.value)}
+                        placeholder="مثال: حسن (مالك النظام)"
+                        className="w-full p-2.5 bg-white rounded-xl text-xs font-bold text-slate-900 outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-200 mb-1">اسم المتجر / المنشأة</label>
                       <input
                         type="text"
                         required

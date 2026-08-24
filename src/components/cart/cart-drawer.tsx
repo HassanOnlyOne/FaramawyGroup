@@ -164,15 +164,20 @@ export function CartDrawer() {
                       ? paymentMethod === 'credit'
                         ? 'border-orange-500 bg-orange-50 dark:bg-orange-950/60 text-orange-700 dark:text-orange-300 shadow-sm'
                         : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 hover:bg-slate-100'
-                      : 'opacity-50 cursor-not-allowed bg-slate-100 dark:bg-slate-800/80 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-slate-700'
+                      : 'opacity-40 cursor-not-allowed pointer-events-none bg-slate-100 dark:bg-slate-800/80 text-slate-400 dark:text-slate-500 border-slate-200 dark:border-slate-700'
                   )}
                 >
                   {!isCreditEnabled ? (
-                    <Lock className="h-3.5 w-3.5 text-slate-400 dark:text-slate-500" />
+                    <>
+                      <Lock className="h-3.5 w-3.5 text-slate-400 dark:text-slate-500" />
+                      <span>أجل (غير متاح)</span>
+                    </>
                   ) : (
-                    <CreditCard className="h-4 w-4 text-orange-600 dark:text-orange-400" />
+                    <>
+                      <CreditCard className="h-4 w-4 text-orange-600 dark:text-orange-400" />
+                      <span>دفع آجل</span>
+                    </>
                   )}
-                  <span>دفع آجل</span>
                 </button>
               </div>
 
