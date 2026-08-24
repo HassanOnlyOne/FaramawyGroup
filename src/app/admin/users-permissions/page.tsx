@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { useToast } from '@/components/ui/toast';
 import { useNumberFormat } from '@/context/number-format-context';
@@ -18,6 +19,7 @@ const PERMISSION_KEYS = [
 
 export default function UsersPermissionsPage() {
   const { toast } = useToast();
+  const router = useRouter();
   const { formatNumber } = useNumberFormat();
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -50,13 +52,18 @@ export default function UsersPermissionsPage() {
   async function fetchUsers() {
     setLoading(true);
     try {
-      const res = await fetch(`/api/admin/users-permissions?t=${Date.now()}`);
+      const res = await fetch(`/api/admin/users-permissions?t=${Date.now()}`, {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache' }
+      });
       if (res.ok) {
         const json = await res.json();
-        setUsers(json.data || []);
+        if (json.success && Array.isArray(json.data)) {
+          setUsers(json.data);
+        }
       }
     } catch (err) {
-      console.error(err);
+      console.error('Failed to fetch users:', err);
     } finally {
       setLoading(false);
     }
@@ -82,6 +89,8 @@ export default function UsersPermissionsPage() {
         newPermissions.customers = true;
       } else if (newRole === 'staff') {
         roleLabel = 'موظف / كاشير';
+      } else if (newRole === 'customer') {
+        roleLabel = 'عميل / تاجر معتمد';
       }
 
       return {
@@ -100,7 +109,7 @@ export default function UsersPermissionsPage() {
         ...u,
         permissions: {
           ...u.permissions,
-          [permKey]: !u.permissions[permKey]
+          [permKey]: !u.permissions?.[permKey]
         }
       };
     }));
@@ -115,20 +124,56 @@ export default function UsersPermissionsPage() {
         body: JSON.stringify({
           id: user.id,
           role: user.role,
-          role_label: user.role_label,
           permissions: user.permissions
         })
       });
 
       const json = await res.json().catch(() => ({}));
 
-      if (res.ok && json.success !== false) {
-        toast({ title: `تم حفظ وتحديث صلاحيات (${user.full_name}) بنجاح`, type: 'success' });
+      // Strictly verify response is successful and data is present without errors
+      if (res.ok && json.success === true && json.data) {
+        // Update local state with the exact server verified data
+        const updatedUser = json.data;
+        setUsers(prev => prev.map(u => {
+          if (u.id === user.id) {
+            let roleLabel = u.role_label;
+            if (updatedUser.role === 'super_owner') roleLabel = 'مالك النظام (Super Owner)';
+            else if (updatedUser.role === 'admin') roleLabel = 'المدير العام (Admin)';
+            else if (updatedUser.role === 'delegate') roleLabel = 'مندوب توزيع ومبيعات';
+            else if (updatedUser.role === 'staff') roleLabel = 'موظف / كاشير';
+            else if (updatedUser.role === 'customer') roleLabel = 'عميل / تاجر معتمد';
+
+            return {
+              ...u,
+              ...updatedUser,
+              role: updatedUser.role || user.role,
+              role_label: roleLabel,
+              permissions: updatedUser.permissions || user.permissions
+            };
+          }
+          return u;
+        }));
+
+        toast({
+          title: 'تم حفظ التعديلات بنجاح',
+          description: `تم تحديث رتبة وصلاحيات (${user.full_name}) في قاعدة البيانات`,
+          type: 'success'
+        });
+
+        router.refresh();
       } else {
-        toast({ title: 'خطأ', description: json.error || 'فشل حفظ الصلاحيات', type: 'error' });
+        toast({ 
+          title: 'فشل حفظ الصلاحيات', 
+          description: json.error || 'تعذر حفظ التعديلات في قاعدة البيانات', 
+          type: 'error' 
+        });
       }
     } catch (err: any) {
-      toast({ title: 'خطأ في الاتصال بالسيرفر', description: err.message, type: 'error' });
+      toast({ 
+        title: 'خطأ في الاتصال بالسيرفر', 
+        description: err.message || 'حدث خطأ أثناء إرسال الطلب', 
+        type: 'error' 
+      });
     } finally {
       setSavingId(null);
     }
@@ -151,8 +196,8 @@ export default function UsersPermissionsPage() {
 
       const json = await res.json().catch(() => ({}));
 
-      if (res.ok && json.success !== false) {
-        toast({ title: 'تم إنشاء المستخدم وإضافته بنجاح', type: 'success' });
+      if (res.ok && json.success === true && json.data) {
+        toast({ title: 'تم إنشاء المستخدم بنجاح', description: 'تم تفعيل الحساب وحفظ الصلاحيات في النظام', type: 'success' });
         setShowAddModal(false);
         setNewUserData({
           full_name: '',
@@ -171,6 +216,7 @@ export default function UsersPermissionsPage() {
           }
         });
         await fetchUsers();
+        router.refresh();
       } else {
         toast({ title: 'خطأ', description: json.error || 'فشل إنشاء المستخدم', type: 'error' });
       }
@@ -188,7 +234,7 @@ export default function UsersPermissionsPage() {
           <div>
             <h1 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white flex items-center gap-3">
               <ShieldCheck className="w-8 h-8 text-brand-600 dark:text-emerald-400" />
-              إدارة الفريق والصلاحيات (Users & Permissions)
+              <span>إدارة الفريق والصلاحيات (Users & Permissions)</span>
             </h1>
             <p className="text-slate-500 dark:text-slate-400 text-xs mt-1">تحديد مستويات الوصول والأدوار الوظيفية لفريق العمل والمديرين</p>
           </div>

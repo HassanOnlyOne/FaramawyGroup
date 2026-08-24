@@ -5,6 +5,8 @@ import { createAdminClient } from '@/lib/supabase/admin';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+const ALLOWED_ADMIN_ROLES = ['admin', 'staff', 'owner', 'manager', 'super_owner'];
+
 const DEFAULT_PERMISSIONS = {
   orders: true,
   purchases: true,
@@ -15,6 +17,33 @@ const DEFAULT_PERMISSIONS = {
   reports: true,
 };
 
+async function checkAdminAuth(supabase: any, adminClient: any) {
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  if (!user || authError) {
+    return { authorized: false, error: 'Unauthorized: يرجى تسجيل الدخول أولاً', user: null };
+  }
+
+  // Check role in profiles
+  let { data: profile } = await adminClient
+    .from('profiles')
+    .select('role, full_name, email')
+    .eq('id', user.id)
+    .maybeSingle();
+
+  if (!profile) {
+    const fb = await supabase.from('profiles').select('role, full_name, email').eq('id', user.id).maybeSingle();
+    profile = fb.data;
+  }
+
+  const role = String(profile?.role || '').toLowerCase();
+  if (!ALLOWED_ADMIN_ROLES.includes(role)) {
+    return { authorized: false, error: 'Forbidden: غير مصرح لك بالوصول لإدارة الصلاحيات', user, profile };
+  }
+
+  return { authorized: true, user, profile };
+}
+
+// GET: Fetch team users
 export async function GET() {
   try {
     const adminClient = createAdminClient();
@@ -80,6 +109,11 @@ export async function POST(request: NextRequest) {
     const adminClient = createAdminClient();
     const supabase = await createClient();
 
+    const authCheck = await checkAdminAuth(supabase, adminClient);
+    if (!authCheck.authorized) {
+      return NextResponse.json({ success: false, error: authCheck.error }, { status: 403 });
+    }
+
     const body = await request.json();
     const { full_name, email, phone, password, role, permissions } = body;
 
@@ -91,12 +125,12 @@ export async function POST(request: NextRequest) {
 
     // 1. Create in Supabase Auth if admin has access
     try {
-      if (password) {
+      if (password && adminClient?.auth?.admin) {
         await adminClient.auth.admin.createUser({
           email,
           password,
           email_confirm: true,
-          user_metadata: { full_name, role: role || 'staff' }
+          user_metadata: { full_name, role: role || 'staff', permissions: permissions || DEFAULT_PERMISSIONS }
         });
       }
     } catch (authErr) {
@@ -128,7 +162,7 @@ export async function POST(request: NextRequest) {
       await adminClient.from('audit_logs').insert([{
         id: crypto.randomUUID(),
         created_at: new Date().toISOString(),
-        user_name: 'إدارة النظام',
+        user_name: authCheck.profile?.full_name || authCheck.user?.email || 'إدارة النظام',
         user_role: 'المدير العام',
         action_type: 'إنشاء مستخدم جديد',
         category: 'security',
@@ -142,45 +176,113 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// PUT: Update role and permissions
+// PUT / PATCH: Update role and permissions
 export async function PUT(request: NextRequest) {
   try {
     const adminClient = createAdminClient();
     const supabase = await createClient();
 
+    // 1. Check admin authorization
+    const authCheck = await checkAdminAuth(supabase, adminClient);
+    if (!authCheck.authorized) {
+      return NextResponse.json({ success: false, error: authCheck.error }, { status: 403 });
+    }
+
     const body = await request.json();
     const { id, role, permissions } = body;
 
     if (!id) {
-      return NextResponse.json({ success: false, error: 'معرف المستخدم مطلوب' }, { status: 400 });
+      return NextResponse.json({ success: false, error: 'معرف المستخدم مطلوب (User ID is required)' }, { status: 400 });
     }
 
     const updates: any = {};
-    if (role) updates.role = role;
-    if (permissions) updates.permissions = permissions;
+    if (role !== undefined) updates.role = role;
+    if (permissions !== undefined) updates.permissions = permissions;
 
-    let { data, error } = await adminClient.from('profiles').update(updates).eq('id', id).select().maybeSingle();
+    // 2. Perform DB update
+    let updateResult = await adminClient
+      .from('profiles')
+      .update(updates)
+      .eq('id', id)
+      .select()
+      .maybeSingle();
 
-    if (error || !data) {
-      const fb = await supabase.from('profiles').update(updates).eq('id', id).select().maybeSingle();
-      data = fb.data;
+    // If update failed due to permissions column, fallback to role only
+    if (updateResult.error && String(updateResult.error.message || '').includes('permissions')) {
+      updateResult = await adminClient
+        .from('profiles')
+        .update({ role: updates.role })
+        .eq('id', id)
+        .select()
+        .maybeSingle();
     }
 
-    // Log the permission update in audit_logs
+    // Fallback using server client
+    if (updateResult.error || !updateResult.data) {
+      const fb = await supabase
+        .from('profiles')
+        .update(updates)
+        .eq('id', id)
+        .select()
+        .maybeSingle();
+      if (!fb.error && fb.data) {
+        updateResult = fb;
+      }
+    }
+
+    if (updateResult.error) {
+      return NextResponse.json({ 
+        success: false, 
+        error: `فشل حفظ التعديلات في قاعدة البيانات: ${updateResult.error.message}` 
+      }, { status: 500 });
+    }
+
+    if (!updateResult.data) {
+      const { data: existingUser } = await adminClient.from('profiles').select('*').eq('id', id).maybeSingle();
+      if (!existingUser) {
+        return NextResponse.json({ success: false, error: 'لم يتم العثور على حساب المستخدم في النظام' }, { status: 404 });
+      }
+      updateResult.data = { ...existingUser, ...updates };
+    }
+
+    // 3. Update Supabase Auth user_metadata to keep sessions aligned
+    try {
+      if (adminClient?.auth?.admin) {
+        await adminClient.auth.admin.updateUserById(id, {
+          user_metadata: {
+            role: updates.role || updateResult.data.role,
+            permissions: updates.permissions || updateResult.data.permissions
+          }
+        });
+      }
+    } catch (authErr) {
+      console.warn('Auth user metadata update warning:', authErr);
+    }
+
+    // 4. Log the permission update in audit_logs
     try {
       await adminClient.from('audit_logs').insert([{
         id: crypto.randomUUID(),
         created_at: new Date().toISOString(),
-        user_name: 'إدارة النظام',
+        user_name: authCheck.profile?.full_name || authCheck.user?.email || 'إدارة النظام',
         user_role: 'المدير العام',
         action_type: 'تعديل صلاحيات',
         category: 'security',
-        details: `تم تحديث صلاحيات الحساب (${data?.full_name || id}) إلى رتبة (${role || data?.role})`
+        details: `تم تحديث صلاحيات ورتبة الحساب (${updateResult.data?.full_name || id}) إلى رتبة (${updates.role || updateResult.data?.role})`
       }]);
     } catch {}
 
-    return NextResponse.json({ success: true, data, message: 'تم تحديث الصلاحيات بنجاح' }, { status: 200 });
+    return NextResponse.json({ 
+      success: true, 
+      data: updateResult.data, 
+      message: 'تم حفظ وتحديث رتبة وصلاحيات المستخدم بنجاح' 
+    }, { status: 200 });
+
   } catch (err: any) {
-    return NextResponse.json({ success: false, error: err.message }, { status: 500 });
+    return NextResponse.json({ success: false, error: err.message || 'حدث خطأ أثناء حفظ التعديلات' }, { status: 500 });
   }
+}
+
+export async function PATCH(request: NextRequest) {
+  return PUT(request);
 }
