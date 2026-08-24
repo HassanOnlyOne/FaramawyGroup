@@ -10,6 +10,7 @@ import { Store, Package, ShoppingCart, ClipboardList, Receipt, UserCircle, Phone
 import { cn } from '@/lib/utils';
 import { ThemeToggle } from '@/components/ui/theme-toggle';
 import { NumberFormatToggle } from '@/components/ui/number-format-toggle';
+import { useToast } from '@/components/ui/toast';
 
 const BOTTOM_TABS = [
   { href: '/', label: 'السوق', icon: Store, match: (p: string) => p === '/' },
@@ -23,7 +24,25 @@ const BOTTOM_TABS = [
 export function CustomerLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { items } = useCart();
+  const { toast } = useToast();
   const cartItemCount = items.reduce((acc, item) => acc + item.quantity, 0);
+
+  React.useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const err = params.get('error');
+      if (err === 'unauthorized' || err === 'unauthorized_admin_access') {
+        toast({
+          title: 'غير مصرح بالدخول',
+          description: 'عفواً، لا تملك صلاحية الوصول إلى لوحة الإدارة. تم توجيهك للمتجر.',
+          type: 'error',
+        });
+        // Clean URL parameter without reloading
+        const cleanUrl = window.location.pathname;
+        window.history.replaceState({}, '', cleanUrl);
+      }
+    }
+  }, [toast]);
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans pb-24 transition-colors duration-200" dir="rtl">

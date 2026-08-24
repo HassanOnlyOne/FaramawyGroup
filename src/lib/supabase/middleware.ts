@@ -1,7 +1,7 @@
 import { createServerClient } from '@supabase/ssr';
 import { type NextRequest, NextResponse } from 'next/server';
 
-export async function updateSession(request: NextRequest) {
+export async function createMiddlewareSupabaseClient(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const validUrl = url && (url.startsWith('http://') || url.startsWith('https://')) ? url : 'http://127.0.0.1:54321';
@@ -21,6 +21,12 @@ export async function updateSession(request: NextRequest) {
       },
     }
   );
+
+  return { supabase, supabaseResponse };
+}
+
+export async function updateSession(request: NextRequest) {
+  const { supabase, supabaseResponse } = await createMiddlewareSupabaseClient(request);
   await supabase.auth.getUser();
   return supabaseResponse;
 }
