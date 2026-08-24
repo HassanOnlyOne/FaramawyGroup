@@ -3,15 +3,16 @@
 import { useState, useEffect } from 'react';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { useNumberFormat } from '@/context/number-format-context';
-import { History, Search, Filter, Shield, ShoppingCart, Receipt, Banknote, Users, RefreshCw, Loader2, CheckCircle2 } from 'lucide-react';
+import { History, Search, Filter, Shield, ShoppingCart, Receipt, Banknote, Users, RefreshCw, Loader2, CheckCircle2, ShieldCheck, Tag } from 'lucide-react';
 
 const CATEGORIES = [
   { id: 'all', label: 'كافة العمليات' },
-  { id: 'sales', label: 'المبيعات والفواتير' },
-  { id: 'purchases', label: 'المشتريات والموردين' },
-  { id: 'treasury', label: 'الخزينة والتحصيلات' },
-  { id: 'customers', label: 'الأجل والعملاء' },
-  { id: 'security', label: 'الأمان والصلاحيات' },
+  { id: 'المبيعات والفواتير', label: 'المبيعات والفواتير' },
+  { id: 'المشتريات والموردين', label: 'المشتريات والموردين' },
+  { id: 'الخزينة والتحصيلات', label: 'الخزينة والتحصيلات' },
+  { id: 'الأجل والعملاء', label: 'الأجل والعملاء' },
+  { id: 'الأمان والصلاحيات', label: 'الأمان والصلاحيات' },
+  { id: 'عام', label: 'عام وعمليات أخرى' },
 ];
 
 export default function AuditLogsPage() {
@@ -28,7 +29,7 @@ export default function AuditLogsPage() {
   async function fetchLogs() {
     setLoading(true);
     try {
-      const res = await fetch(`/api/admin/logs?category=${selectedCategory}&t=${Date.now()}`);
+      const res = await fetch(`/api/admin/logs?category=${encodeURIComponent(selectedCategory)}&t=${Date.now()}`);
       if (res.ok) {
         const json = await res.json();
         setLogs(json.data || []);
@@ -45,7 +46,9 @@ export default function AuditLogsPage() {
     const q = search.toLowerCase();
     return (
       (l.user_name || '').toLowerCase().includes(q) ||
+      (l.user_role || '').toLowerCase().includes(q) ||
       (l.action_type || '').toLowerCase().includes(q) ||
+      (l.category || '').toLowerCase().includes(q) ||
       (l.details || '').toLowerCase().includes(q)
     );
   });
@@ -57,7 +60,7 @@ export default function AuditLogsPage() {
           <div>
             <h1 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white flex items-center gap-3">
               <History className="w-8 h-8 text-brand-600 dark:text-emerald-400" />
-              سجل حركات النظام والعمليات (Audit Log)
+              <span>سجل حركات النظام والعمليات (Audit Log)</span>
             </h1>
             <p className="text-slate-500 dark:text-slate-400 text-xs mt-1">تتبع وتدقيق كافة التعديلات، فواتير البيع والشراء، التحصيلات، وتغييرات الصلاحيات</p>
           </div>
@@ -113,6 +116,7 @@ export default function AuditLogsPage() {
                 <tr>
                   <th className="p-4 whitespace-nowrap">التاريخ والوقت</th>
                   <th className="p-4 whitespace-nowrap">المستخدم والرتبة</th>
+                  <th className="p-4 whitespace-nowrap">القسم</th>
                   <th className="p-4 whitespace-nowrap">نوع العملية</th>
                   <th className="p-4 whitespace-nowrap">التفاصيل والتغييرات</th>
                   <th className="p-4 whitespace-nowrap">عنوان IP</th>
@@ -121,13 +125,13 @@ export default function AuditLogsPage() {
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                 {loading ? (
                   <tr>
-                    <td colSpan={5} className="p-10 text-center text-slate-500 dark:text-slate-400">
+                    <td colSpan={6} className="p-10 text-center text-slate-500 dark:text-slate-400">
                       <Loader2 className="w-8 h-8 animate-spin mx-auto text-brand-600 dark:text-emerald-400" />
                     </td>
                   </tr>
                 ) : filteredLogs.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="p-10 text-center text-slate-500 dark:text-slate-400 font-medium">
+                    <td colSpan={6} className="p-10 text-center text-slate-500 dark:text-slate-400 font-medium">
                       لا توجد حركات مسجلة مطابقة للبحث
                     </td>
                   </tr>
@@ -154,6 +158,12 @@ export default function AuditLogsPage() {
                               : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
                           }`}>
                             {log.user_role}
+                          </span>
+                        </td>
+                        <td className="p-4 whitespace-nowrap">
+                          <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                            <Tag className="w-3 h-3" />
+                            <span>{log.category || 'عام'}</span>
                           </span>
                         </td>
                         <td className="p-4 whitespace-nowrap">

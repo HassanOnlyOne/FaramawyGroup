@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { logAction } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -158,17 +159,16 @@ export async function POST(request: NextRequest) {
     }
 
     // 3. Log event into audit_logs
-    try {
-      await adminClient.from('audit_logs').insert([{
-        id: crypto.randomUUID(),
-        created_at: new Date().toISOString(),
-        user_name: authCheck.profile?.full_name || authCheck.user?.email || 'إدارة النظام',
-        user_role: 'المدير العام',
-        action_type: 'إنشاء مستخدم جديد',
-        category: 'security',
-        details: `تم إنشاء حساب جديد للموظف (${full_name}) بالبريد (${email}) ورتبة (${role || 'staff'})`
-      }]);
-    } catch {}
+    await logAction({
+      actionType: 'إنشاء مستخدم جديد',
+      category: 'الأمان والصلاحيات',
+      details: `تم إنشاء حساب جديد للموظف (${full_name}) بالبريد (${email}) ورتبة (${role || 'staff'})`,
+      user: {
+        id: authCheck.user.id,
+        name: authCheck.profile?.full_name || authCheck.user?.email || 'إدارة النظام',
+        role: authCheck.profile?.role || 'المدير العام'
+      }
+    });
 
     return NextResponse.json({ success: true, data, message: 'تم إضافة المستخدم وتعيين صلاحياته بنجاح' }, { status: 201 });
   } catch (err: any) {
@@ -260,17 +260,16 @@ export async function PUT(request: NextRequest) {
     }
 
     // 4. Log the permission update in audit_logs
-    try {
-      await adminClient.from('audit_logs').insert([{
-        id: crypto.randomUUID(),
-        created_at: new Date().toISOString(),
-        user_name: authCheck.profile?.full_name || authCheck.user?.email || 'إدارة النظام',
-        user_role: 'المدير العام',
-        action_type: 'تعديل صلاحيات',
-        category: 'security',
-        details: `تم تحديث صلاحيات ورتبة الحساب (${updateResult.data?.full_name || id}) إلى رتبة (${updates.role || updateResult.data?.role})`
-      }]);
-    } catch {}
+    await logAction({
+      actionType: 'تعديل صلاحيات ورتبة',
+      category: 'الأمان والصلاحيات',
+      details: `تم تحديث صلاحيات ورتبة الحساب (${updateResult.data?.full_name || id}) إلى رتبة (${updates.role || updateResult.data?.role})`,
+      user: {
+        id: authCheck.user.id,
+        name: authCheck.profile?.full_name || authCheck.user?.email || 'إدارة النظام',
+        role: authCheck.profile?.role || 'المدير العام'
+      }
+    });
 
     return NextResponse.json({ 
       success: true, 

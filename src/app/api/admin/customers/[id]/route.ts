@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { logAction } from '@/lib/audit';
 import { NextRequest, NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
@@ -90,6 +91,13 @@ async function handleCustomerUpdate(req: NextRequest, id: string) {
       data = res.data;
       if (res.error) throw res.error;
     }
+
+    // Log the customer update in audit_logs
+    await logAction({
+      actionType: 'تعديل بيانات عميل/حد ائتماني',
+      category: 'الأجل والعملاء',
+      details: `تم تحديث بيانات العميل (${data?.store_name || data?.full_name || id}) - الحد الائتماني: (${data?.credit_limit ?? '---'} ج.م) - حالة الأجل: (${data?.is_credit_enabled || data?.credit_enabled ? 'مفعل' : 'معطل'})`
+    });
 
     return NextResponse.json({ success: true, data, profile: data, message: 'تم تحديث بيانات العميل بنجاح' }, { status: 200 });
   } catch (err: any) {

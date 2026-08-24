@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { logAction } from '@/lib/audit';
 import type { OrderStatus } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
@@ -132,6 +133,13 @@ export async function PATCH(
         await adminClient.from('profiles').update({ previous_balance: totalCustomerDebt }).eq('id', order.customer_id);
       }
     }
+
+    // Log the order status change in audit_logs
+    await logAction({
+      actionType: 'تحديث حالة طلب',
+      category: 'المبيعات والفواتير',
+      details: `تم تغيير حالة الفاتورة/الطلب (${order.invoice_no || order.order_number || targetOrderId}) للعميل (${order.customer?.full_name || order.customer?.store_name || order.customer_id}) إلى حالة (${status})`
+    });
 
     return NextResponse.json({ 
       success: true, 

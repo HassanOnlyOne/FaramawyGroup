@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { NextRequest, NextResponse } from 'next/server';
-import { logSystemActivity } from '@/lib/auditLogger';
+import { logAction } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -105,11 +105,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: error.message }, { status: 400 });
     }
 
-    await logSystemActivity(
-      'إضافة مورد جديد',
-      `تسجيل مورد جديد: ${supplierName} (${supplierCompany}) برصيد افتتاحي ${numBalance} ج.م`,
-      'purchases'
-    );
+    await logAction({
+      actionType: 'إضافة مورد جديد',
+      category: 'المشتريات والموردين',
+      details: `تسجيل مورد جديد: ${supplierName} (${supplierCompany}) برصيد افتتاحي ${numBalance} ج.م`
+    });
 
     return NextResponse.json({ success: true, data, supplier: data, message: 'تم حفظ المورد بنجاح' }, { status: 201 });
   } catch (err: any) {
@@ -207,11 +207,11 @@ export async function PUT(req: NextRequest) {
         }
       }
 
-      await logSystemActivity(
-        'سداد دفعة للمورد',
-        `سداد دفعة نقدية بقيمة ${recordedPaymentAmount} ج.م للمورد (${existing.name || existing.company_name}) - الرصيد الجديد: ${newBalance} ج.م`,
-        'treasury'
-      );
+      await logAction({
+        actionType: 'سداد دفعة للمورد',
+        category: 'الخزينة والتحصيلات',
+        details: `سداد دفعة نقدية بقيمة ${recordedPaymentAmount} ج.م للمورد (${existing.name || existing.company_name}) - الرصيد الجديد: ${newBalance} ج.م`
+      });
     } else if (balance !== undefined || current_balance !== undefined) {
       const b = Number(current_balance !== undefined ? current_balance : balance);
       updates.balance = b;

@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { NextRequest, NextResponse } from 'next/server';
-import { logActivity } from '@/lib/auditLogger';
+import { logAction } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -198,11 +198,11 @@ export async function POST(req: NextRequest) {
       await adminClient.from('suppliers').update({ balance: totalSupDebt }).eq('id', supplier_id);
     }
 
-    await logActivity(
-      'تسجيل فاتورة مشتريات',
-      `تسجيل فاتورة مشتريات #${invoiceNum} من مورد (${supplier_name || 'مورد عام'}) بإجمالي ${totalVal} ج.م ومتبقي ${remVal} ج.م`,
-      'purchases'
-    );
+    await logAction({
+      actionType: 'تسجيل فاتورة مشتريات',
+      category: 'المشتريات والموردين',
+      details: `تسجيل فاتورة مشتريات #${invoiceNum} من مورد (${supplier_name || 'مورد عام'}) بإجمالي ${totalVal} ج.م ومسدد ${paidVal} ج.م ومتبقي ${remVal} ج.م`
+    });
 
     return NextResponse.json({
       success: true,

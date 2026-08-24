@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { logAction } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -112,17 +113,16 @@ async function handleUpdateRole(request: NextRequest) {
     }
 
     // 6. Record in audit_logs
-    try {
-      await supabaseAdmin.from('audit_logs').insert([{
-        id: crypto.randomUUID(),
-        created_at: new Date().toISOString(),
-        user_name: callerProfile?.full_name || callerUser.email || 'إدارة النظام',
-        user_role: 'المدير العام',
-        action_type: 'تعديل رتبة وصلاحيات',
-        category: 'security',
-        details: `تم تحديث رتبة وصلاحيات المستخدم (${updatedProfile?.full_name || targetUserId}) إلى (${updatePayload.role || updatedProfile?.role})`
-      }]);
-    } catch {}
+    await logAction({
+      actionType: 'تعديل رتبة وصلاحيات',
+      category: 'الأمان والصلاحيات',
+      details: `تم تحديث رتبة وصلاحيات المستخدم (${updatedProfile?.full_name || targetUserId}) إلى (${updatePayload.role || updatedProfile?.role})`,
+      user: {
+        id: callerUser.id,
+        name: callerProfile?.full_name || callerUser.email || 'إدارة النظام',
+        role: callerProfile?.role || 'المدير العام'
+      }
+    });
 
     return NextResponse.json({
       success: true,

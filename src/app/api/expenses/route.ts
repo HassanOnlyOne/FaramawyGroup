@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { NextRequest, NextResponse } from 'next/server';
+import { logAction } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -49,6 +50,13 @@ export async function POST(req: NextRequest) {
     if (error && !data) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
+
+    // Log the expense in audit_logs
+    await logAction({
+      actionType: 'تسجيل مصروف نثري/تشغيلي',
+      category: 'الخزينة والتحصيلات',
+      details: `تسجيل مصروف (${title || 'مصروف'}) بقيمة ${amount} ج.م - تصنيف: ${category || 'تشغيلي'}`
+    });
 
     return NextResponse.json({ data, message: 'تم تسجيل المصروف بنجاح' }, { status: 201 });
   } catch (err: any) {

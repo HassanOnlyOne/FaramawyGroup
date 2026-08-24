@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { NextRequest, NextResponse } from 'next/server';
-import { logSystemActivity } from '@/lib/auditLogger';
+import { logAction } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -194,11 +194,11 @@ export async function POST(request: NextRequest) {
     }
 
     // 6. Create audit log
-    await logSystemActivity(
-      'سند تحصيل نقدية',
-      `تسجيل سند تحصيل نقدي بقيمة ${payAmount} ج.م للعميل (${custName}) - كود #${custCode} - ${notes || 'سداد لحساب الأجل'}`,
-      'treasury'
-    );
+    await logAction({
+      actionType: 'سند تحصيل نقدية',
+      category: 'الخزينة والتحصيلات',
+      details: `تسجيل سند تحصيل نقدي بقيمة ${payAmount} ج.م للعميل (${custName}) - كود #${custCode} - ${notes || 'سداد لحساب الأجل'}`
+    });
 
     return NextResponse.json({
       success: true,

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { getMemoryAuditLogs, logSystemActivity } from '@/lib/auditLogger';
+import { getMemoryAuditLogs, logAction, normalizeCategory } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -12,20 +12,12 @@ export async function GET(request: NextRequest) {
     const supabase = await createClient();
 
     const { searchParams } = new URL(request.url);
-    const category = searchParams.get('category');
+    const categoryParam = searchParams.get('category');
     const search = searchParams.get('search');
 
     let dbLogs: any[] = [];
     try {
       let query = adminClient.from('audit_logs').select('*').order('created_at', { ascending: false }).limit(200);
-
-      if (category && category !== 'all') {
-        query = query.eq('category', category);
-      }
-
-      if (search) {
-        query = query.or(`user_name.ilike.%${search}%,action_type.ilike.%${search}%,details.ilike.%${search}%`);
-      }
 
       const { data, error } = await query;
       if (!error && data) {
@@ -45,14 +37,19 @@ export async function GET(request: NextRequest) {
 
     let mergedLogs = Array.from(logMap.values());
 
-    if (category && category !== 'all') {
-      mergedLogs = mergedLogs.filter(l => l.category === category);
+    if (categoryParam && categoryParam !== 'all' && categoryParam !== 'الكل') {
+      const normalizedTarget = normalizeCategory(categoryParam);
+      mergedLogs = mergedLogs.filter(l => {
+        const logCat = normalizeCategory(l.category || '');
+        return logCat === normalizedTarget || l.category === categoryParam;
+      });
     }
 
     if (search) {
       const q = search.toLowerCase();
       mergedLogs = mergedLogs.filter(l => 
         (l.user_name || '').toLowerCase().includes(q) ||
+        (l.user_role || '').toLowerCase().includes(q) ||
         (l.action_type || '').toLowerCase().includes(q) ||
         (l.details || '').toLowerCase().includes(q)
       );
@@ -69,13 +66,14 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { action_type, details, category } = body;
+    const { action_type, actionType, details, category, user } = body;
 
-    const data = await logSystemActivity(
-      action_type || 'عملية إدارية',
-      details || 'تفاصيل الإجراء',
-      category || 'general'
-    );
+    const data = await logAction({
+      actionType: actionType || action_type || 'عملية إدارية',
+      details: details || 'تفاصيل الإجراء',
+      category: category || 'عام',
+      user
+    });
 
     return NextResponse.json({ success: true, data }, { status: 201 });
   } catch (err: any) {
