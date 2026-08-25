@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { calculateTieredPrice } from '@/lib/pricing';
+import { logAction } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -324,17 +325,39 @@ export async function POST(req: NextRequest) {
       await adminClient.from('profiles').update({ previous_balance: newBalance }).eq('id', customerId);
     }
 
-    return NextResponse.json({ 
-      success: true, 
-      ...order, 
-      id: order.id, 
+    // Log in audit log
+    await logAction({
+      actionType: 'إنشاء طلب جديد',
+      category: 'المبيعات والفواتير',
+      details: `تسجيل طلب بيع جديد #${nextInvoiceNumber} للعميل (${customerProfile?.store_name || customerProfile?.full_name || customer_name || customerId}) بإجمالي ${total} ج.م - طريقة الدفع: ${method === 'credit' ? 'أجل' : 'كاش'}`,
+      user: {
+        id: user?.id || customerId,
+        name: customerProfile?.store_name || customerProfile?.full_name || customer_name || 'عميل المتجر',
+        role: customerProfile?.role || 'عميل'
+      }
+    });
+
+    const fullOrder = {
+      ...order,
+      id: order.id,
       order_number: nextInvoiceNumber,
       invoice_no: nextInvoiceNumber,
-      order 
+      order_items: orderItemsToInsert,
+      customer: customerProfile
+    };
+
+    return NextResponse.json({ 
+      success: true, 
+      id: order.id, 
+      order_id: order.id, 
+      order_number: nextInvoiceNumber,
+      invoice_no: nextInvoiceNumber,
+      order: fullOrder,
+      data: fullOrder
     }, { status: 201 });
 
   } catch (err: any) {
     console.error('Order POST Exception:', err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: err.message || 'حدث خطأ أثناء معالجة الطلب' }, { status: 500 });
   }
 }

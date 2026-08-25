@@ -5,7 +5,7 @@ import { createAdminClient } from '@/lib/supabase/admin';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-const ALLOWED_ADMIN_ROLES = ['admin', 'staff', 'owner', 'manager'];
+const ALLOWED_ADMIN_ROLES = ['admin', 'staff', 'owner', 'manager', 'super_owner'];
 
 export default async function AdminRootLayout({
   children,

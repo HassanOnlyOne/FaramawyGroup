@@ -131,7 +131,11 @@ export default function CheckoutPage() {
 
     try {
       const orderData = {
+        customer_id: profile?.id,
+        customer_code: profile?.customer_code,
+        previous_balance: previousDebt,
         customer_name: customerName.trim(),
+        store_name: profile?.store_name || customerName.trim(),
         contact_phone: cleanPhone,
         secondary_phone: secondaryPhone.trim() || undefined,
         delivery_address: deliveryAddress.trim(),
@@ -140,6 +144,8 @@ export default function CheckoutPage() {
         payment_method: paymentMethod,
         paid_amount: paymentMethod === 'credit' ? numPaid : total,
         remaining_amount: remainingCredit,
+        total: total,
+        total_amount: total,
         items: items.map(item => ({
           product_id: item.product.id,
           product_name: item.product.name,
@@ -158,15 +164,25 @@ export default function CheckoutPage() {
 
       const data = await res.json().catch(() => ({}));
 
+      if (res.status === 401) {
+        router.push('/login?redirect=/checkout');
+        return;
+      }
+
       if (!res.ok) {
         throw new Error(data.error || 'حدث خطأ أثناء معالجة الطلب، يرجى المحاولة مرة أخرى.');
       }
 
       clearCart();
-      router.push(`/orders/${data.data?.id || data.order?.id || data.id || ''}`);
+      const targetOrderId = data.id || data.order_id || data.data?.id || data.order?.id;
+      if (targetOrderId) {
+        router.push(`/orders/${targetOrderId}`);
+      } else {
+        router.push('/orders');
+      }
     } catch (err: any) {
-      console.error(err);
-      setError(err.message || 'حدث خطأ غير متوقع.');
+      console.error('Checkout error:', err);
+      setError(err.message || 'حدث خطأ غير متوقع أثناء إرسال الطلب.');
     } finally {
       setSubmitting(false);
     }
