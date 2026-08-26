@@ -11,6 +11,84 @@ export async function GET(req: NextRequest) {
     const adminClient = createAdminClient();
     const supabase = await createClient();
 
+    const { searchParams } = new URL(req.url);
+    const supplierId = searchParams.get('id');
+    const returnPaymentsOnly = searchParams.get('payments') === 'true';
+
+    // 1. If requesting all supplier payments (e.g. for Treasury)
+    if (returnPaymentsOnly) {
+      let payments: any[] = [];
+      try {
+        const { data, error } = await adminClient
+          .from('supplier_payments')
+          .select('*, supplier:suppliers(id, name, company_name)')
+          .order('payment_date', { ascending: false });
+        if (!error && data) {
+          payments = data;
+        } else {
+          const fb = await supabase
+            .from('supplier_payments')
+            .select('*, supplier:suppliers(id, name, company_name)')
+            .order('payment_date', { ascending: false });
+          payments = fb.data || [];
+        }
+      } catch {}
+
+      return NextResponse.json({ success: true, data: payments, payments });
+    }
+
+    // 2. If requesting detailed statement for a specific supplier
+    if (supplierId) {
+      let { data: supplier } = await adminClient
+        .from('suppliers')
+        .select('*')
+        .eq('id', supplierId)
+        .maybeSingle();
+
+      if (!supplier) {
+        const fb = await supabase.from('suppliers').select('*').eq('id', supplierId).maybeSingle();
+        supplier = fb.data;
+      }
+
+      if (!supplier) {
+        return NextResponse.json({ success: false, error: 'المورد غير موجود' }, { status: 404 });
+      }
+
+      // Fetch all purchases for this supplier
+      const { data: purchasesData } = await adminClient
+        .from('purchases')
+        .select('*')
+        .or(`supplier_id.eq.${supplierId},supplier_name.ilike.%${supplier.name || supplier.company_name}%`)
+        .order('created_at', { ascending: false });
+
+      // Fetch all payments made to this supplier
+      let paymentsData: any[] = [];
+      try {
+        const { data: pays } = await adminClient
+          .from('supplier_payments')
+          .select('*')
+          .eq('supplier_id', supplierId)
+          .order('payment_date', { ascending: false });
+        paymentsData = pays || [];
+      } catch {}
+
+      const purchases = purchasesData || [];
+      const payments = paymentsData || [];
+      const currentBalance = Number(supplier.current_balance !== undefined && supplier.current_balance !== null ? supplier.current_balance : (supplier.balance || 0));
+
+      return NextResponse.json({
+        success: true,
+        supplier: {
+          ...supplier,
+          balance: currentBalance,
+          current_balance: currentBalance
+        },
+        purchases,
+        payments
+      });
+    }
+
+    // 3. List all suppliers with calculated balances
     let { data: suppliers, error } = await adminClient.from('suppliers').select('*').order('created_at', { ascending: false });
     if (error || !suppliers) {
       const fb = await supabase.from('suppliers').select('*').order('created_at', { ascending: false });
@@ -68,29 +146,28 @@ export async function POST(req: NextRequest) {
 
     const supplierName = (name || company_name || 'مورد عام').trim();
     const supplierCompany = (company_name || name || '').trim();
-    const numBalance = Number(initial_balance ?? balance ?? 0);
+    const numBalance = Number(balance || initial_balance || 0);
 
     const payload: any = {
+      id: crypto.randomUUID(),
       name: supplierName,
       company_name: supplierCompany,
-      phone: phone?.trim() || null,
+      phone: phone ? phone.trim() : null,
       balance: numBalance,
       current_balance: numBalance,
-      notes: notes?.trim() || null,
-      created_at: new Date().toISOString()
+      initial_balance: numBalance,
+      notes: notes ? notes.trim() : null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
     };
 
     let { data, error } = await adminClient.from('suppliers').insert([payload]).select().maybeSingle();
-    
-    if (error && (error.code === 'PGRST204' || error.message.includes('balance') || error.message.includes('current_balance'))) {
-      const minimalPayload = {
-        name: supplierName,
-        company_name: supplierCompany,
-        phone: phone?.trim() || null,
-        notes: notes?.trim() || null,
-        created_at: new Date().toISOString()
-      };
-      const retry = await adminClient.from('suppliers').insert([minimalPayload]).select().maybeSingle();
+
+    if (error && (error.message?.includes('initial_balance') || error.message?.includes('current_balance'))) {
+      const fallback = { ...payload };
+      delete fallback.initial_balance;
+      delete fallback.current_balance;
+      const retry = await adminClient.from('suppliers').insert([fallback]).select().maybeSingle();
       data = retry.data;
       error = retry.error;
     }
@@ -105,10 +182,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: error.message }, { status: 400 });
     }
 
+    // Resolve user details
+    const { data: { user: callerUser } } = await supabase.auth.getUser().catch(() => ({ data: { user: null } }));
+    let callerName = '';
+    let callerRole = '';
+    if (callerUser) {
+      const { data: callerProf } = await adminClient.from('profiles').select('full_name, role').eq('id', callerUser.id).maybeSingle();
+      callerName = callerProf?.full_name || callerUser.email?.split('@')[0] || '';
+      callerRole = callerProf?.role || '';
+    }
+
     await logAction({
       actionType: 'إضافة مورد جديد',
       category: 'المشتريات والموردين',
-      details: `تسجيل مورد جديد: ${supplierName} (${supplierCompany}) برصيد افتتاحي ${numBalance} ج.م`
+      details: `قام ${callerName || 'المشرف'} بتسجيل مورد جديد: ${supplierName} (${supplierCompany}) برصيد افتتاحي ${numBalance} ج.م`,
+      user: { id: callerUser?.id, name: callerName, role: callerRole }
     });
 
     return NextResponse.json({ success: true, data, supplier: data, message: 'تم حفظ المورد بنجاح' }, { status: 201 });
@@ -146,6 +234,17 @@ export async function PUT(req: NextRequest) {
     if (notes !== undefined) updates.notes = notes ? notes.trim() : null;
 
     let recordedPaymentAmount = 0;
+    const supplierTitle = existing.company_name || existing.name || 'مورد';
+
+    // Resolve caller user
+    const { data: { user: callerUser } } = await supabase.auth.getUser().catch(() => ({ data: { user: null } }));
+    let callerName = '';
+    let callerRole = '';
+    if (callerUser) {
+      const { data: callerProf } = await adminClient.from('profiles').select('full_name, role').eq('id', callerUser.id).maybeSingle();
+      callerName = callerProf?.full_name || callerUser.email?.split('@')[0] || '';
+      callerRole = callerProf?.role || '';
+    }
 
     if (payment_amount !== undefined && Number(payment_amount) > 0) {
       recordedPaymentAmount = Number(payment_amount);
@@ -154,29 +253,40 @@ export async function PUT(req: NextRequest) {
       updates.balance = newBalance;
       updates.current_balance = newBalance;
 
-      // 1. Try calling RPC if defined
-      try {
-        await adminClient.rpc('record_supplier_payment', {
-          p_supplier_id: id,
-          p_amount: recordedPaymentAmount,
-          p_notes: notes || 'سداد دفعة نقدية للمورد',
-          p_user_name: 'المدير العام'
-        });
-      } catch {}
-
-      // 2. Insert into supplier_payments table
+      // 1. Insert into supplier_payments table
       const supPaymentRecord = {
-        id: `spay-${Date.now()}`,
+        id: crypto.randomUUID(),
         supplier_id: id,
         amount: recordedPaymentAmount,
-        notes: notes || 'سداد دفعة نقدية للمورد',
+        notes: notes || `سداد نقدي لحساب المورد ${supplierTitle}`,
         payment_date: new Date().toISOString(),
         created_at: new Date().toISOString()
       };
 
       try {
         await adminClient.from('supplier_payments').insert([supPaymentRecord]);
-      } catch {}
+      } catch (errSup) {
+        console.warn('supplier_payments insert warning:', errSup);
+      }
+
+      // 2. Insert into treasury_transactions table for Treasury outflow tracking
+      const treasuryEntry = {
+        id: crypto.randomUUID(),
+        transaction_type: 'سداد دفعة مورد',
+        inflow: 0,
+        outflow: recordedPaymentAmount,
+        party: supplierTitle,
+        party_id: id,
+        notes: `سداد نقدي لحساب المورد ${supplierTitle}${notes ? ` (${notes})` : ''}`,
+        created_at: new Date().toISOString(),
+        created_by: callerUser?.id || null
+      };
+
+      try {
+        await adminClient.from('treasury_transactions').insert([treasuryEntry]);
+      } catch (errTx) {
+        console.warn('treasury_transactions insert warning:', errTx);
+      }
 
       // 3. Update purchase invoices remaining debt
       const { data: supPurchases } = await adminClient
@@ -207,11 +317,14 @@ export async function PUT(req: NextRequest) {
         }
       }
 
+      // 4. Log in audit_logs with exact user name format
       await logAction({
         actionType: 'سداد دفعة للمورد',
         category: 'الخزينة والتحصيلات',
-        details: `سداد دفعة نقدية بقيمة ${recordedPaymentAmount} ج.م للمورد (${existing.name || existing.company_name}) - الرصيد الجديد: ${newBalance} ج.م`
+        details: `قام ${callerName || 'المشرف'} بسداد دفعة نقدية بقيمة ${recordedPaymentAmount} ج.م للمورد (${supplierTitle}) - الرصيد الجديد: ${newBalance} ج.م`,
+        user: { id: callerUser?.id, name: callerName, role: callerRole }
       });
+
     } else if (balance !== undefined || current_balance !== undefined) {
       const b = Number(current_balance !== undefined ? current_balance : balance);
       updates.balance = b;
@@ -229,10 +342,12 @@ export async function PUT(req: NextRequest) {
       success: true,
       data: updated,
       supplier: updated,
-      new_balance: updates.current_balance,
-      message: 'تم تحديث بيانات ورصيد المورد بنجاح'
+      new_balance: updates.balance,
+      message: recordedPaymentAmount > 0 ? 'تم تسجيل سداد الدفعة وخصمها من رصيد المورد والخزينة بنجاح' : 'تم حفظ التعديلات بنجاح'
     }, { status: 200 });
+
   } catch (err: any) {
+    console.error('Supplier PUT error:', err);
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });
   }
 }
@@ -247,10 +362,26 @@ export async function DELETE(req: NextRequest) {
 
     if (!id) return NextResponse.json({ success: false, error: 'معرف المورد مطلوب' }, { status: 400 });
 
-    const res = await adminClient.from('suppliers').delete().eq('id', id);
-    if (res.error) {
+    const { data: existing } = await adminClient.from('suppliers').select('name, company_name').eq('id', id).maybeSingle();
+
+    const { error } = await adminClient.from('suppliers').delete().eq('id', id);
+    if (error) {
       await supabase.from('suppliers').delete().eq('id', id);
     }
+
+    const { data: { user: callerUser } } = await supabase.auth.getUser().catch(() => ({ data: { user: null } }));
+    let callerName = '';
+    if (callerUser) {
+      const { data: callerProf } = await adminClient.from('profiles').select('full_name').eq('id', callerUser.id).maybeSingle();
+      callerName = callerProf?.full_name || callerUser.email?.split('@')[0] || '';
+    }
+
+    await logAction({
+      actionType: 'حذف مورد',
+      category: 'المشتريات والموردين',
+      details: `قام ${callerName || 'المشرف'} بحذف المورد (${existing?.company_name || existing?.name || id}) نهائياً من النظام`,
+      user: { id: callerUser?.id, name: callerName }
+    });
 
     return NextResponse.json({ success: true, message: 'تم حذف المورد بنجاح' }, { status: 200 });
   } catch (err: any) {

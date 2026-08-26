@@ -119,6 +119,7 @@ export async function logAction({
     }
 
     // 2. Fetch authenticated user details from Supabase if not fully provided
+    let prof: any = null;
     try {
       let authUser: any = null;
       if (!userId) {
@@ -130,11 +131,12 @@ export async function logAction({
       }
 
       if (userId) {
-        const { data: prof } = await adminClient
+        const profRes = await adminClient
           .from('profiles')
           .select('full_name, store_name, role, email')
           .eq('id', userId)
           .maybeSingle();
+        prof = profRes.data;
 
         if (prof) {
           // Priority 1: Real Full Name from profiles table
@@ -162,8 +164,14 @@ export async function logAction({
     }
 
     userRole = formatRoleTitle(userRole || 'مدير عام');
-    if (!userName || userName === 'المدير العام' || userName === 'مدير عام' || userName === 'مسؤول الإدارة') {
-      userName = user?.name || 'مستخدم النظام';
+    if (!userName || userName === 'المدير العام' || userName === 'مدير عام' || userName === 'مسؤول الإدارة' || userName === 'المدير') {
+      userName = user?.name || (prof?.email ? prof.email.split('@')[0] : 'مشرف النظام');
+    }
+
+    // Format as "Name (Role)" if not already formatted
+    if (userName && !userName.includes('(')) {
+      const shortRole = userRole.includes('مدير') ? 'مدير' : userRole.includes('مالك') ? 'مالك' : userRole.includes('مندوب') ? 'مندوب' : 'مشرف';
+      userName = `${userName} (${shortRole})`;
     }
 
     const normalizedCat = normalizeCategory(category);
@@ -179,10 +187,6 @@ export async function logAction({
       details,
       ip_address: ipAddress
     };
-
-    // Store in memory buffer for instant reflection
-    memoryAuditLogs.unshift(newLog);
-    if (memoryAuditLogs.length > 500) memoryAuditLogs.pop();
 
     // Insert into database using adminClient (service role)
     let { data, error } = await adminClient.from('audit_logs').insert([newLog]).select().maybeSingle();
@@ -201,7 +205,15 @@ export async function logAction({
       data = fb.data || newLog;
     }
 
-    return data;
+    if (data?.id) {
+      newLog.id = data.id;
+    }
+
+    // Store in memory buffer for instant reflection
+    memoryAuditLogs.unshift(newLog);
+    if (memoryAuditLogs.length > 500) memoryAuditLogs.pop();
+
+    return data || newLog;
   } catch (err) {
     console.error('Audit Log Error:', err);
     return null;

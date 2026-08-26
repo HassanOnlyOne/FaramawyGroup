@@ -120,17 +120,27 @@ async function handleProductUpdate(req: NextRequest, id: string) {
     const finalProd = updatedProduct || updateResult.data;
     const prodName = finalProd?.name || name || `صنف #${id}`;
 
+    let callerName = '';
+    let callerRole = '';
+    if (adminUser) {
+      const { data: prof } = await supabase.from('profiles').select('full_name, role').eq('id', adminUser.id).maybeSingle();
+      callerName = prof?.full_name || adminUser.email?.split('@')[0] || '';
+      callerRole = prof?.role || '';
+    }
+
     if (is_paused !== undefined) {
       await logAction({
         actionType: is_paused ? 'إيقاف مؤقت لصنف' : 'استئناف طلب صنف',
         category: 'عام وعمليات أخرى',
-        details: `تم ${is_paused ? 'إيقاف الطلب مؤقتاً على' : 'استئناف وتفعيل الطلب على'} الصنف (${prodName})`
+        details: `قام ${callerName || 'المشرف'} بـ${is_paused ? 'إيقاف' : 'تفعيل'} الصنف (${prodName})`,
+        user: { id: adminUser?.id, name: callerName, role: callerRole }
       });
     } else {
       await logAction({
         actionType: 'تعديل صنف',
         category: 'عام وعمليات أخرى',
-        details: `تم تحديث بيانات الصنف (${prodName})${base_price !== undefined ? ` — السعر: ${base_price} ج.م` : ''}${stock_quantity !== undefined ? ` — المخزون: ${stock_quantity}` : ''}`
+        details: `قام ${callerName || 'المشرف'} بتعديل بيانات الصنف (${prodName})${base_price !== undefined ? ` — السعر: ${base_price} ج.م` : ''}${stock_quantity !== undefined ? ` — المخزون: ${stock_quantity}` : ''}`,
+        user: { id: adminUser?.id, name: callerName, role: callerRole }
       });
     }
 

@@ -12,6 +12,7 @@ export default function TreasuryPage() {
   const [expenses, setExpenses] = useState<any[]>([]);
   const [purchases, setPurchases] = useState<any[]>([]);
   const [orders, setOrders] = useState<any[]>([]);
+  const [supplierPayments, setSupplierPayments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -20,11 +21,12 @@ export default function TreasuryPage() {
 
   async function fetchTreasuryData() {
     try {
-      const [payRes, expRes, purRes, ordRes] = await Promise.all([
+      const [payRes, expRes, purRes, ordRes, supPayRes] = await Promise.all([
         fetch(`/api/payments?t=${Date.now()}`),
         fetch(`/api/expenses?t=${Date.now()}`),
         fetch(`/api/admin/purchases?t=${Date.now()}`),
-        fetch(`/api/orders?status=completed&limit=100&t=${Date.now()}`)
+        fetch(`/api/orders?status=completed&limit=100&t=${Date.now()}`),
+        fetch(`/api/admin/suppliers?payments=true&t=${Date.now()}`)
       ]);
 
       if (payRes.ok) {
@@ -46,6 +48,11 @@ export default function TreasuryPage() {
         const ordData = await ordRes.json();
         setOrders(Array.isArray(ordData) ? ordData : (ordData?.data || ordData?.orders || []));
       }
+
+      if (supPayRes.ok) {
+        const spData = await supPayRes.json();
+        setSupplierPayments(Array.isArray(spData) ? spData : (spData?.data || spData?.payments || []));
+      }
     } catch (err) {
       console.error(err);
     } finally {
@@ -62,10 +69,11 @@ export default function TreasuryPage() {
   }, 0);
   const totalInflows = directPaymentsCollected + orderCashCollected;
 
-  // 2. OUTFLOWS:
+  // 2. OUTFLOWS (Expenses + Purchase Invoices Paid + Standalone Supplier Payments):
   const totalExpenses = expenses.reduce((sum, e) => sum + Number(e.amount || 0), 0);
   const purchaseCashPaid = purchases.reduce((sum, p) => sum + Number(p.paid_amount || 0), 0);
-  const totalOutflows = totalExpenses + purchaseCashPaid;
+  const supplierCashPaid = supplierPayments.reduce((sum, sp) => sum + Number(sp.amount || 0), 0);
+  const totalOutflows = totalExpenses + purchaseCashPaid + supplierCashPaid;
 
   // 3. NET LIQUIDITY:
   const netSafeBalance = totalInflows - totalOutflows;
@@ -125,6 +133,21 @@ export default function TreasuryPage() {
         inflow: 0,
         outflow: paid,
         notes: `فاتورة مشتريات #${p.invoice_no || p.invoice_number || String(p.id).slice(0, 6)}`
+      });
+    }
+  });
+
+  supplierPayments.forEach(sp => {
+    const amount = Number(sp.amount || 0);
+    if (amount > 0) {
+      transactions.push({
+        id: `spay-${sp.id}`,
+        date: sp.payment_date || sp.created_at,
+        type: 'سداد دفعة مورد',
+        party: sp.supplier?.company_name || sp.supplier?.name || sp.supplier_name || 'مورد بضائع',
+        inflow: 0,
+        outflow: amount,
+        notes: sp.notes || 'سداد نقدي لحساب المورد'
       });
     }
   });

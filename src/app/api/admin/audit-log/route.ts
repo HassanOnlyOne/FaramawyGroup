@@ -60,12 +60,26 @@ export async function GET(request: NextRequest) {
 
     const memLogs = getMemoryAuditLogs();
 
-    // Merge & deduplicate by ID
-    const logMap = new Map<string, any>();
-    memLogs.forEach(l => logMap.set(l.id, l));
-    dbLogs.forEach(l => logMap.set(l.id, l));
+    // Merge & deduplicate by ID and event signature to prevent any duplicate entries
+    const seenSignatures = new Set<string>();
+    let mergedLogs: any[] = [];
 
-    let mergedLogs = Array.from(logMap.values());
+    // Prioritize DB logs first, then memory logs
+    const allCombined = [...dbLogs, ...memLogs];
+    for (const log of allCombined) {
+      if (!log) continue;
+      const logId = log.id ? String(log.id) : '';
+      
+      // Signature based on action_type + details + 5-second bucket
+      const timeBucket = Math.floor(new Date(log.created_at || Date.now()).getTime() / 5000);
+      const signature = `${log.action_type}:::${log.details}:::${timeBucket}`;
+      
+      if ((!logId || !seenSignatures.has(logId)) && !seenSignatures.has(signature)) {
+        if (logId) seenSignatures.add(logId);
+        seenSignatures.add(signature);
+        mergedLogs.push(log);
+      }
+    }
 
     // Date range filtering for memory logs
     if (startDate) {

@@ -119,13 +119,13 @@ export default function AuditLogsPage() {
   // Helper to extract clean actual user name
   const getCleanUserName = (log: any): string => {
     const rawName = (log.user_name || '').trim();
-    if (rawName && !['المدير العام', 'مسؤول الإدارة', 'إدارة النظام', 'مدير عام'].includes(rawName)) {
+    if (rawName && !['المدير العام', 'مسؤول الإدارة', 'إدارة النظام', 'مدير عام', 'المدير'].includes(rawName)) {
       return rawName;
     }
     if (log.user_email) {
       return log.user_email;
     }
-    return 'المدير';
+    return rawName || 'مشرف النظام';
   };
 
   // Filter logs based on category, time chip, user, and search
