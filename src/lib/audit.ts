@@ -138,33 +138,32 @@ export async function logAction({
 
         if (prof) {
           // Priority 1: Real Full Name from profiles table
-          if (prof.full_name && prof.full_name.trim() && prof.full_name !== 'المدير العام') {
+          if (prof.full_name && prof.full_name.trim() && !prof.full_name.includes('المدير العام')) {
             userName = prof.full_name.trim();
-          } else if (authUser?.user_metadata?.full_name && authUser.user_metadata.full_name !== 'المدير العام') {
+          } else if (authUser?.user_metadata?.full_name && !authUser.user_metadata.full_name.includes('المدير العام')) {
             userName = authUser.user_metadata.full_name.trim();
           } else if (prof.store_name && prof.store_name.trim()) {
             userName = prof.store_name.trim();
           } else if (prof.email) {
-            userName = prof.email.split('@')[0];
+            userName = prof.email;
           }
 
-          if (!userRole || userRole === 'المدير العام') {
+          if (!userRole) {
             userRole = formatRoleTitle(prof.role);
           }
         }
       }
 
       if (!userName && authUser) {
-        userName = authUser.user_metadata?.full_name || authUser.email?.split('@')[0] || '';
+        userName = authUser.user_metadata?.full_name || authUser.email || '';
       }
     } catch (e) {
       console.warn('Could not resolve user profile in audit log:', e);
     }
 
-    // 3. Prevent duplicate "المدير العام" in both name and role
     userRole = formatRoleTitle(userRole || 'مدير عام');
-    if (!userName || userName === 'المدير العام' || userName === 'مدير عام') {
-      userName = 'مسؤول الإدارة';
+    if (!userName || userName === 'المدير العام' || userName === 'مدير عام' || userName === 'مسؤول الإدارة') {
+      userName = user?.name || 'مستخدم النظام';
     }
 
     const normalizedCat = normalizeCategory(category);

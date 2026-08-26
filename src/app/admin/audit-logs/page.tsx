@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { useNumberFormat } from '@/context/number-format-context';
 import { createClient } from '@/lib/supabase/client';
@@ -10,13 +10,11 @@ import {
   RefreshCw, 
   Loader2, 
   Tag, 
-  Calendar,
-  Filter,
-  User,
-  ShieldCheck,
-  RotateCcw,
-  Clock,
-  Activity
+  User, 
+  Filter, 
+  Clock, 
+  Activity,
+  ChevronDown
 } from 'lucide-react';
 
 const CATEGORIES = [
@@ -29,15 +27,26 @@ const CATEGORIES = [
   { id: 'عام وعمليات أخرى', label: 'عام وعمليات أخرى' },
 ];
 
+const TIME_CHIPS = [
+  { id: 'all', label: 'الكل' },
+  { id: 'today', label: 'اليوم' },
+  { id: 'yesterday', label: 'أمس' },
+  { id: 'week', label: 'آخر 7 أيام' },
+  { id: 'month', label: 'هذا الشهر' },
+];
+
 export default function AuditLogsPage() {
   const { formatNumber } = useNumberFormat();
   const [logs, setLogs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  
+  // Filters
   const [selectedCategory, setSelectedCategory] = useState('all');
+  const [timeFilter, setTimeFilter] = useState('all');
+  const [selectedUser, setSelectedUser] = useState('all');
   const [search, setSearch] = useState('');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
+  const [displayLimit, setDisplayLimit] = useState(100);
 
   const fetchLogs = useCallback(async (isBackground = false) => {
     if (!isBackground) setRefreshing(true);
@@ -46,8 +55,6 @@ export default function AuditLogsPage() {
       if (selectedCategory && selectedCategory !== 'all') {
         params.set('category', selectedCategory);
       }
-      if (startDate) params.set('startDate', startDate);
-      if (endDate) params.set('endDate', endDate);
       params.set('limit', '500');
       params.set('t', Date.now().toString());
 
@@ -65,7 +72,7 @@ export default function AuditLogsPage() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [selectedCategory, startDate, endDate]);
+  }, [selectedCategory]);
 
   useEffect(() => {
     fetchLogs();
@@ -82,7 +89,7 @@ export default function AuditLogsPage() {
     // 3. Supabase Realtime channel subscription on audit_logs
     const supabase = createClient();
     const channel = supabase
-      .channel('audit-logs-realtime-feed')
+      .channel('audit-logs-realtime-quick')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'audit_logs' }, () => {
         fetchLogs(true);
       })
@@ -95,41 +102,79 @@ export default function AuditLogsPage() {
     };
   }, [fetchLogs]);
 
-  const handleResetFilters = () => {
-    setSelectedCategory('all');
-    setSearch('');
-    setStartDate('');
-    setEndDate('');
+  // Clean, real user names for dropdown filter
+  const userOptions = useMemo(() => {
+    const set = new Set<string>();
+    logs.forEach(l => {
+      let name = (l.user_name || '').trim();
+      if (name && !['المدير العام', 'مسؤول الإدارة', 'إدارة النظام'].includes(name)) {
+        set.add(name);
+      } else if (l.user_email) {
+        set.add(l.user_email);
+      }
+    });
+    return Array.from(set);
+  }, [logs]);
+
+  // Helper to extract clean actual user name
+  const getCleanUserName = (log: any): string => {
+    const rawName = (log.user_name || '').trim();
+    if (rawName && !['المدير العام', 'مسؤول الإدارة', 'إدارة النظام', 'مدير عام'].includes(rawName)) {
+      return rawName;
+    }
+    if (log.user_email) {
+      return log.user_email;
+    }
+    return 'المدير';
   };
 
-  const filteredLogs = logs.filter(l => {
-    if (search.trim()) {
-      const q = search.toLowerCase().trim();
-      const matchesSearch = 
-        (l.user_name || '').toLowerCase().includes(q) ||
-        (l.user_role || '').toLowerCase().includes(q) ||
-        (l.action_type || '').toLowerCase().includes(q) ||
-        (l.category || '').toLowerCase().includes(q) ||
-        (l.details || '').toLowerCase().includes(q);
-      if (!matchesSearch) return false;
-    }
+  // Filter logs based on category, time chip, user, and search
+  const filteredLogs = useMemo(() => {
+    const now = new Date();
+    const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const endToday = startToday + 86400000;
+    const startYesterday = startToday - 86400000;
+    const startWeek = now.getTime() - (7 * 86400000);
+    const startMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
 
-    if (startDate) {
-      const startMs = new Date(startDate).getTime();
-      const logMs = new Date(l.created_at).getTime();
-      if (logMs < startMs) return false;
-    }
+    return logs.filter(l => {
+      const logTime = new Date(l.created_at).getTime();
 
-    if (endDate) {
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
-      const endMs = end.getTime();
-      const logMs = new Date(l.created_at).getTime();
-      if (logMs > endMs) return false;
-    }
+      // 1. Time Filter Chip
+      if (timeFilter === 'today') {
+        if (logTime < startToday || logTime >= endToday) return false;
+      } else if (timeFilter === 'yesterday') {
+        if (logTime < startYesterday || logTime >= startToday) return false;
+      } else if (timeFilter === 'week') {
+        if (logTime < startWeek) return false;
+      } else if (timeFilter === 'month') {
+        if (logTime < startMonth) return false;
+      }
 
-    return true;
-  });
+      // 2. User Filter Dropdown
+      if (selectedUser !== 'all') {
+        const cleanName = getCleanUserName(l);
+        if (cleanName !== selectedUser && l.user_name !== selectedUser) return false;
+      }
+
+      // 3. Search Query
+      if (search.trim()) {
+        const q = search.toLowerCase().trim();
+        const matchesSearch = 
+          (l.user_name || '').toLowerCase().includes(q) ||
+          (l.action_type || '').toLowerCase().includes(q) ||
+          (l.category || '').toLowerCase().includes(q) ||
+          (l.details || '').toLowerCase().includes(q);
+        if (!matchesSearch) return false;
+      }
+
+      return true;
+    });
+  }, [logs, timeFilter, selectedUser, search]);
+
+  const visibleLogs = useMemo(() => {
+    return filteredLogs.slice(0, displayLimit);
+  }, [filteredLogs, displayLimit]);
 
   const getCategoryBadgeClass = (category: string) => {
     const cat = String(category || '').trim();
@@ -151,40 +196,27 @@ export default function AuditLogsPage() {
     return 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700';
   };
 
-  const getRoleBadgeClass = (role: string) => {
-    const r = String(role || '').trim();
-    if (r.includes('مالك')) {
-      return 'bg-purple-100 text-purple-800 dark:bg-purple-950/60 dark:text-purple-300 border-purple-200 dark:border-purple-800';
-    }
-    if (r.includes('مدير') || r.includes('Admin')) {
-      return 'bg-blue-100 text-blue-800 dark:bg-blue-950/60 dark:text-blue-300 border-blue-200 dark:border-blue-800';
-    }
-    if (r.includes('مندوب')) {
-      return 'bg-cyan-100 text-cyan-800 dark:bg-cyan-950/60 dark:text-cyan-300 border-cyan-200 dark:border-cyan-800';
-    }
-    return 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300 border-slate-200 dark:border-slate-700';
-  };
-
   return (
     <AdminLayout>
-      <div className="space-y-6">
+      <div className="space-y-5">
+        
         {/* Header Strip */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
             <div className="flex items-center gap-3">
-              <div className="w-11 h-11 rounded-2xl bg-brand-50 dark:bg-brand-950/60 flex items-center justify-center text-brand-600 dark:text-emerald-400 border border-brand-200 dark:border-brand-800/80 shadow-xs">
-                <History className="w-6 h-6" />
+              <div className="w-10 h-10 rounded-2xl bg-brand-50 dark:bg-brand-950/60 flex items-center justify-center text-brand-600 dark:text-emerald-400 border border-brand-200 dark:border-brand-800 shadow-xs">
+                <History className="w-5 h-5" />
               </div>
               <div>
                 <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white flex items-center gap-2">
-                  <span>سجل حركات النظام والعمليات (Audit Log)</span>
-                  <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                  <span>سجل حركات النظام</span>
+                  <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
                     <Activity className="w-3 h-3 text-emerald-500 animate-pulse" />
                     مباشر
                   </span>
                 </h1>
                 <p className="text-slate-500 dark:text-slate-400 text-xs mt-0.5">
-                  توثيق فوري لكافة حركات وتعديلات المبيعات، المشتريات، الخزينة، والمستخدمين مع حفظ البيانات
+                  توثيق فوري وسريع لكافة العمليات الإدارية والفواتير والتحصيلات
                 </p>
               </div>
             </div>
@@ -194,156 +226,158 @@ export default function AuditLogsPage() {
             <button
               onClick={() => fetchLogs(false)}
               disabled={refreshing}
-              className="btn-secondary flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold shadow-xs cursor-pointer"
-              title="تحديث قائمة الحركات فورياً"
+              className="btn-secondary flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold shadow-xs cursor-pointer active:scale-98 transition-transform"
+              title="تحديث السجل الآن"
             >
-              <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+              <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin text-brand-600 dark:text-emerald-400' : ''}`} />
               <span>تحديث السجل</span>
             </button>
           </div>
         </div>
 
-        {/* Advanced Filters Panel */}
-        <div className="bg-white dark:bg-[#0B132B] rounded-3xl p-5 sm:p-6 border border-slate-200 dark:border-slate-800 shadow-md space-y-4">
+        {/* 1️⃣ Quick Filters Bar */}
+        <div className="bg-white dark:bg-[#0B132B] rounded-2xl p-4 sm:p-5 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
           
-          {/* Quick Categories Bar */}
-          <div>
-            <div className="flex items-center gap-2 mb-2.5 text-xs font-bold text-slate-500 dark:text-slate-400">
-              <Filter className="w-3.5 h-3.5" />
-              <span>تصفية سريعة بالقسم:</span>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {CATEGORIES.map(cat => {
-                const isActive = selectedCategory === cat.id;
+          {/* Quick Date Chips + User Selector */}
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+            {/* Quick Date Filter Chips */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-xs font-bold text-slate-400 dark:text-slate-500 ml-1">
+                الفترة:
+              </span>
+              {TIME_CHIPS.map(chip => {
+                const isActive = timeFilter === chip.id;
                 return (
                   <button
-                    key={cat.id}
-                    onClick={() => setSelectedCategory(cat.id)}
-                    className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    key={chip.id}
+                    onClick={() => setTimeFilter(chip.id)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
                       isActive
-                        ? 'bg-brand-700 dark:bg-emerald-600 text-white shadow-md shadow-brand-700/20 scale-[1.02]'
-                        : 'bg-slate-100 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700/80'
+                        ? 'bg-brand-700 dark:bg-emerald-600 text-white shadow-xs'
+                        : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
                     }`}
                   >
-                    {cat.label}
+                    {chip.label}
                   </button>
                 );
               })}
             </div>
+
+            {/* Quick User Dropdown */}
+            <div className="flex items-center gap-2 w-full md:w-auto">
+              <span className="text-xs font-bold text-slate-400 dark:text-slate-500 shrink-0">
+                المستخدم:
+              </span>
+              <div className="relative w-full md:w-48">
+                <select
+                  value={selectedUser}
+                  onChange={e => setSelectedUser(e.target.value)}
+                  className="w-full appearance-none bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-white border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-1.5 text-xs font-bold outline-none focus:border-brand-500 cursor-pointer shadow-xs"
+                >
+                  <option value="all">كل المستخدمين</option>
+                  {userOptions.map(name => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
+                <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5 pointer-events-none" />
+              </div>
+            </div>
           </div>
 
-          {/* Search and Date Range Row */}
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-3 pt-2 border-t border-slate-100 dark:border-slate-800/80">
-            {/* Search Input */}
-            <div className="md:col-span-6 relative">
-              <input
-                type="text"
-                placeholder="بحث شامل بالاسم، نوع العملية، أو تفاصيل الإجراء..."
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                className="w-full pl-4 pr-10 py-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800/90 rounded-xl text-xs font-bold text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:border-brand-500 shadow-xs"
-              />
-              <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-3" />
-            </div>
-
-            {/* Date From */}
-            <div className="md:col-span-2.5 flex items-center gap-1.5 bg-slate-50 dark:bg-slate-800/60 px-3 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700">
-              <Calendar className="w-4 h-4 text-slate-400 shrink-0" />
-              <div className="w-full">
-                <span className="block text-[9px] font-bold text-slate-400">من تاريخ:</span>
-                <input
-                  type="date"
-                  value={startDate}
-                  onChange={e => setStartDate(e.target.value)}
-                  className="w-full bg-transparent text-xs font-bold font-mono text-slate-900 dark:text-white outline-none cursor-pointer"
-                />
-              </div>
-            </div>
-
-            {/* Date To */}
-            <div className="md:col-span-2.5 flex items-center gap-1.5 bg-slate-50 dark:bg-slate-800/60 px-3 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700">
-              <Calendar className="w-4 h-4 text-slate-400 shrink-0" />
-              <div className="w-full">
-                <span className="block text-[9px] font-bold text-slate-400">إلى تاريخ:</span>
-                <input
-                  type="date"
-                  value={endDate}
-                  onChange={e => setEndDate(e.target.value)}
-                  className="w-full bg-transparent text-xs font-bold font-mono text-slate-900 dark:text-white outline-none cursor-pointer"
-                />
-              </div>
-            </div>
-
-            {/* Reset Button */}
-            <div className="md:col-span-1 flex items-center">
-              {(selectedCategory !== 'all' || search || startDate || endDate) && (
+          {/* Quick Categories Bar */}
+          <div className="flex items-center gap-1.5 flex-wrap pt-3 border-t border-slate-100 dark:border-slate-800">
+            <span className="text-xs font-bold text-slate-400 dark:text-slate-500 ml-1">
+              القسم:
+            </span>
+            {CATEGORIES.map(cat => {
+              const isActive = selectedCategory === cat.id;
+              return (
                 <button
-                  onClick={handleResetFilters}
-                  className="w-full h-full py-2.5 px-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40 dark:hover:text-red-400 text-xs font-bold flex items-center justify-center gap-1 transition-colors cursor-pointer"
-                  title="إعادة ضبط الفلاتر"
+                  key={cat.id}
+                  onClick={() => setSelectedCategory(cat.id)}
+                  className={`px-3 py-1 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                    isActive
+                      ? 'bg-brand-700 dark:bg-emerald-600 text-white shadow-xs'
+                      : 'bg-slate-50 dark:bg-slate-850 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-200/60 dark:border-slate-700/60'
+                  }`}
                 >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">مسح</span>
+                  {cat.label}
                 </button>
-              )}
-            </div>
+              );
+            })}
+          </div>
+
+          {/* Flexible Search Bar */}
+          <div className="relative pt-1">
+            <input
+              type="text"
+              placeholder="بحث في تفاصيل العملية، الإجراء، أو اسم القائم بالحركة..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              className="w-full pl-4 pr-10 py-2 border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 rounded-xl text-xs font-bold text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:border-brand-500 shadow-xs"
+            />
+            <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-3.5" />
           </div>
         </div>
 
-        {/* Logs Table Card */}
-        <div className="bg-white dark:bg-[#0B132B] rounded-3xl shadow-md border border-slate-200 dark:border-slate-800 overflow-hidden">
-          <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-850/60 flex items-center justify-between flex-wrap gap-2">
+        {/* 2️⃣ & 3️⃣ Clean Scrollable Table Card */}
+        <div className="bg-white dark:bg-[#0B132B] rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden">
+          
+          {/* Card Top Info */}
+          <div className="p-3.5 sm:p-4 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-850 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Clock className="w-4 h-4 text-brand-600 dark:text-emerald-400" />
-              <h2 className="font-bold text-slate-900 dark:text-white text-sm sm:text-base">السجل الزمني الفوري للحركات</h2>
+              <span className="font-bold text-slate-800 dark:text-slate-200 text-xs sm:text-sm">
+                الجدول الزمني للعمليات
+              </span>
             </div>
-            <span className="text-xs font-bold font-mono px-3 py-1 rounded-xl bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 shadow-xs">
-              {formatNumber(filteredLogs.length)} حركة مسجلة
+            <span className="text-xs font-bold font-mono px-2.5 py-0.5 rounded-lg bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+              {formatNumber(filteredLogs.length)} حركة
             </span>
           </div>
 
-          <div className="overflow-x-auto">
+          {/* Smooth Scrollable Container with max height */}
+          <div className="overflow-x-auto overflow-y-auto max-h-[620px] scrollbar-thin">
             <table className="w-full text-right text-sm">
-              <thead className="bg-slate-50 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 font-bold text-xs border-b border-slate-200 dark:border-slate-700">
+              <thead className="sticky top-0 z-10 bg-slate-100/95 dark:bg-slate-850/95 backdrop-blur-sm text-slate-700 dark:text-slate-300 font-bold text-xs border-b border-slate-200 dark:border-slate-700 shadow-2xs">
                 <tr>
-                  <th className="p-4 whitespace-nowrap">التاريخ والوقت</th>
-                  <th className="p-4 whitespace-nowrap">المستخدم والرتبة</th>
-                  <th className="p-4 whitespace-nowrap">القسم</th>
-                  <th className="p-4 whitespace-nowrap">نوع العملية</th>
-                  <th className="p-4 whitespace-nowrap">التفاصيل والتغييرات</th>
-                  <th className="p-4 whitespace-nowrap">عنوان IP</th>
+                  <th className="p-3.5 whitespace-nowrap">التاريخ والوقت</th>
+                  <th className="p-3.5 whitespace-nowrap">المستخدم</th>
+                  <th className="p-3.5 whitespace-nowrap">القسم</th>
+                  <th className="p-3.5 whitespace-nowrap">نوع العملية</th>
+                  <th className="p-3.5">التفاصيل والتغييرات</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {loading ? (
                   <tr>
-                    <td colSpan={6} className="p-12 text-center text-slate-500 dark:text-slate-400">
-                      <Loader2 className="w-8 h-8 animate-spin mx-auto text-brand-600 dark:text-emerald-400 mb-2" />
-                      <p className="text-xs font-bold">جاري تحميل سجل حركات النظام...</p>
+                    <td colSpan={5} className="p-12 text-center text-slate-500 dark:text-slate-400">
+                      <Loader2 className="w-7 h-7 animate-spin mx-auto text-brand-600 dark:text-emerald-400 mb-2" />
+                      <p className="text-xs font-bold">جاري تحميل سجل الحركات...</p>
                     </td>
                   </tr>
-                ) : filteredLogs.length === 0 ? (
+                ) : visibleLogs.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="p-12 text-center text-slate-500 dark:text-slate-400 font-bold text-xs">
-                      لا توجد حركات مسجلة مطابقة للبحث المحدد
+                    <td colSpan={5} className="p-12 text-center text-slate-500 dark:text-slate-400 font-bold text-xs">
+                      لا توجد حركات مسجلة مطابقة للفلتر المحدد
                     </td>
                   </tr>
                 ) : (
-                  filteredLogs.map(log => {
-                    const roleTitle = log.user_role || 'مدير عام';
-                    const userName = log.user_name && log.user_name !== 'المدير العام' ? log.user_name : 'مسؤول الإدارة';
+                  visibleLogs.map(log => {
+                    const cleanName = getCleanUserName(log);
 
                     return (
-                      <tr key={log.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
+                      <tr key={log.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                        
                         {/* 1. Date & Time */}
-                        <td className="p-4 font-mono text-xs text-slate-700 dark:text-slate-300 whitespace-nowrap">
-                          <div className="font-bold">
+                        <td className="p-3.5 font-mono text-xs text-slate-700 dark:text-slate-300 whitespace-nowrap">
+                          <span className="font-bold block">
                             {new Date(log.created_at).toLocaleDateString('ar-EG', { 
                               year: 'numeric', 
                               month: 'short', 
                               day: 'numeric' 
                             })}
-                          </div>
+                          </span>
                           <span className="text-[11px] text-slate-400 font-mono block mt-0.5">
                             {new Date(log.created_at).toLocaleTimeString('ar-EG', { 
                               hour: '2-digit', 
@@ -354,50 +388,38 @@ export default function AuditLogsPage() {
                           </span>
                         </td>
 
-                        {/* 2. Real User Name and Role */}
-                        <td className="p-4 whitespace-nowrap">
+                        {/* 2. Clean User Name Only (No Role Badges / Placeholders) */}
+                        <td className="p-3.5 whitespace-nowrap">
                           <div className="flex items-center gap-2">
-                            <div className="w-7 h-7 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                            <div className="w-7 h-7 rounded-lg bg-brand-50 dark:bg-slate-800 flex items-center justify-center text-brand-600 dark:text-emerald-400 border border-brand-100 dark:border-slate-700 shrink-0">
                               <User className="w-3.5 h-3.5" />
                             </div>
-                            <div>
-                              <span className="font-extrabold text-slate-900 dark:text-white block text-xs">
-                                {userName}
-                              </span>
-                              <span className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-bold border mt-0.5 ${getRoleBadgeClass(roleTitle)}`}>
-                                {roleTitle}
-                              </span>
-                            </div>
+                            <span className="font-bold text-slate-900 dark:text-white text-xs">
+                              {cleanName}
+                            </span>
                           </div>
                         </td>
 
                         {/* 3. Category */}
-                        <td className="p-4 whitespace-nowrap">
+                        <td className="p-3.5 whitespace-nowrap">
                           <span className={`inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-xl border ${getCategoryBadgeClass(log.category)}`}>
                             <Tag className="w-3 h-3" />
-                            <span>{log.category || 'عام وعمليات أخرى'}</span>
+                            <span>{log.category || 'عام'}</span>
                           </span>
                         </td>
 
                         {/* 4. Action Type */}
-                        <td className="p-4 whitespace-nowrap">
-                          <span className="font-bold text-slate-900 dark:text-white text-xs bg-slate-100 dark:bg-slate-800 px-3 py-1 rounded-xl border border-slate-200 dark:border-slate-700 inline-block shadow-2xs">
+                        <td className="p-3.5 whitespace-nowrap">
+                          <span className="font-bold text-slate-800 dark:text-slate-200 text-xs bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 inline-block">
                             {log.action_type}
                           </span>
                         </td>
 
                         {/* 5. Details */}
-                        <td className="p-4 text-xs text-slate-800 dark:text-slate-200 leading-relaxed max-w-md">
-                          <p className="line-clamp-3 sm:line-clamp-none font-medium">
+                        <td className="p-3.5 text-xs text-slate-800 dark:text-slate-200 leading-relaxed max-w-lg">
+                          <p className="font-medium">
                             {log.details}
                           </p>
-                        </td>
-
-                        {/* 6. IP Address */}
-                        <td className="p-4 font-mono text-xs text-slate-400 whitespace-nowrap">
-                          <span className="px-2 py-0.5 rounded bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-[11px]">
-                            {log.ip_address || '127.0.0.1'}
-                          </span>
                         </td>
                       </tr>
                     );
@@ -406,6 +428,18 @@ export default function AuditLogsPage() {
               </tbody>
             </table>
           </div>
+
+          {/* Load More Button */}
+          {filteredLogs.length > displayLimit && (
+            <div className="p-3.5 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-850/60 text-center">
+              <button
+                onClick={() => setDisplayLimit(prev => prev + 100)}
+                className="btn-secondary px-6 py-2 rounded-xl text-xs font-bold shadow-xs hover:border-brand-400 transition-all cursor-pointer"
+              >
+                تحميل المزيد من الحركات (+100) — المتبقي {filteredLogs.length - displayLimit}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </AdminLayout>
