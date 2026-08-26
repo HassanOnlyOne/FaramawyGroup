@@ -102,22 +102,28 @@ export async function GET() {
       return sum + ordTotal;
     }, 0);
 
-    // 5. Card: "تحصيلات اليوم" (Completed Cash Orders created today + Payment receipts registered today)
-    const todayCashOrders = completedOrders.filter((o: any) => {
-      const pMethod = normalizePaymentMethod(o.payment_method);
-      if (pMethod !== 'cash') return false;
+    // 5. Card: "تحصيلات اليوم" (Actual cash collected today from active completed orders + direct payment receipts)
+    const todayCompletedOrders = completedOrders.filter((o: any) => {
       const d = new Date(o.created_at || o.updated_at);
       return isSameDay(d, now);
     });
 
-    const todayOrderCashTotal = todayCashOrders.reduce((sum: number, o: any) => {
-      const cashAmount = Number(o.paid_amount !== undefined && o.paid_amount !== null && o.paid_amount > 0 ? o.paid_amount : (o.total || o.total_amount || 0));
-      return sum + cashAmount;
+    const todayOrderCashTotal = todayCompletedOrders.reduce((sum: number, o: any) => {
+      const pMethod = normalizePaymentMethod(o.payment_method);
+      const paid = Number(o.paid_amount || 0);
+      const total = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
+
+      if (pMethod === 'cash') {
+        return sum + (paid > 0 ? paid : total);
+      } else if (pMethod === 'credit' && paid > 0) {
+        return sum + paid;
+      }
+      return sum;
     }, 0);
 
     const todayReceiptsTotal = safePayments.filter((p: any) => {
       const d = new Date(p.payment_date || p.created_at);
-      return isSameDay(d, now);
+      return isSameDay(d, now) && Number(p.amount || 0) > 0;
     }).reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
 
     const todayCollections = todayOrderCashTotal + todayReceiptsTotal;

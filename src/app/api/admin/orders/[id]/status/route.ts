@@ -55,37 +55,15 @@ export async function PATCH(
 
     const targetOrderId = order.id;
     const currentStatus = order.status;
-    const isAlreadyDeducted = Boolean(order.stock_deducted);
+    const wasCancelledOrReturned = ['cancelled', 'returned'].includes(currentStatus);
+    const isNowCancelledOrReturned = ['cancelled', 'returned'].includes(status);
+    
+    // An order has stock deducted unless it was cancelled or explicitly set to false
+    const isCurrentlyDeducted = order.stock_deducted !== false;
+    let willBeDeducted = isCurrentlyDeducted;
 
-    let willBeDeducted = isAlreadyDeducted;
-
-    // Deduct stock strictly once when status becomes 'completed' from non-completed and not already deducted
-    if (status === 'completed' && !isAlreadyDeducted) {
-      if (Array.isArray(order.order_items)) {
-        // Group quantities by product_id to ensure exact single deduction per product
-        const qtyByProduct = new Map<string, number>();
-        for (const item of order.order_items) {
-          const prodId = item.product_id || item.product?.id || item.id;
-          const qty = Number(item.quantity || 0);
-          if (prodId && qty > 0) {
-            qtyByProduct.set(prodId, (qtyByProduct.get(prodId) || 0) + qty);
-          }
-        }
-
-        for (const [prodId, totalQty] of qtyByProduct.entries()) {
-          const { data: product } = await adminClient.from('products').select('stock_quantity').eq('id', prodId).maybeSingle();
-          if (product) {
-            const currentStock = Number(product.stock_quantity || 0);
-            const newStock = Math.max(0, currentStock - totalQty);
-            await adminClient.from('products').update({ stock_quantity: newStock, updated_at: new Date().toISOString() }).eq('id', prodId);
-          }
-        }
-      }
-      willBeDeducted = true;
-    }
-
-    // Restore stock if status moves to 'returned' or 'cancelled' and was previously deducted
-    if (['cancelled', 'returned'].includes(status) && isAlreadyDeducted) {
+    // 1. If moving to 'cancelled' or 'returned' from an active order: Restore stock
+    if (isNowCancelledOrReturned && isCurrentlyDeducted) {
       if (Array.isArray(order.order_items)) {
         const qtyByProduct = new Map<string, number>();
         for (const item of order.order_items) {
@@ -106,6 +84,30 @@ export async function PATCH(
         }
       }
       willBeDeducted = false;
+    }
+
+    // 2. If re-activating a previously cancelled/returned order: Re-deduct stock
+    if (!isNowCancelledOrReturned && wasCancelledOrReturned && !isCurrentlyDeducted) {
+      if (Array.isArray(order.order_items)) {
+        const qtyByProduct = new Map<string, number>();
+        for (const item of order.order_items) {
+          const prodId = item.product_id || item.product?.id || item.id;
+          const qty = Number(item.quantity || 0);
+          if (prodId && qty > 0) {
+            qtyByProduct.set(prodId, (qtyByProduct.get(prodId) || 0) + qty);
+          }
+        }
+
+        for (const [prodId, totalQty] of qtyByProduct.entries()) {
+          const { data: product } = await adminClient.from('products').select('stock_quantity').eq('id', prodId).maybeSingle();
+          if (product) {
+            const currentStock = Number(product.stock_quantity || 0);
+            const newStock = Math.max(0, currentStock - totalQty);
+            await adminClient.from('products').update({ stock_quantity: newStock, updated_at: new Date().toISOString() }).eq('id', prodId);
+          }
+        }
+      }
+      willBeDeducted = true;
     }
 
     // Update status and stock_deducted flag in database using exact order.id

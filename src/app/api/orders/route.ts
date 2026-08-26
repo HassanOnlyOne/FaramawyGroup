@@ -230,7 +230,8 @@ export async function POST(req: NextRequest) {
       previous_balance: prevBalance,
       paid_amount: cashAdvance,
       remaining_amount: finalRemaining,
-      current_balance: method === 'credit' ? (prevBalance + finalRemaining) : prevBalance
+      current_balance: method === 'credit' ? (prevBalance + finalRemaining) : prevBalance,
+      stock_deducted: true
     };
 
     function contactPhoneClean(p: string) {
@@ -317,6 +318,40 @@ export async function POST(req: NextRequest) {
       }));
 
       await adminClient.from('order_items').insert(formattedOrderItems);
+
+      // Deduct stock once and only once at order creation
+      const qtyByProduct = new Map<string, number>();
+      for (const oi of orderItemsToInsert) {
+        const prodId = oi.product_id;
+        const qty = Number(oi.quantity || 0);
+        if (prodId && qty > 0) {
+          qtyByProduct.set(prodId, (qtyByProduct.get(prodId) || 0) + qty);
+        }
+      }
+
+      for (const [prodId, totalQty] of qtyByProduct.entries()) {
+        const { data: prod } = await adminClient
+          .from('products')
+          .select('stock_quantity')
+          .eq('id', prodId)
+          .maybeSingle();
+
+        if (prod) {
+          const currentStock = Number(prod.stock_quantity || 0);
+          const newStock = Math.max(0, currentStock - totalQty);
+          await adminClient
+            .from('products')
+            .update({ stock_quantity: newStock, updated_at: new Date().toISOString() })
+            .eq('id', prodId);
+        }
+      }
+    }
+
+    // Try setting stock_deducted flag on orders table if not set in attempt
+    try {
+      await adminClient.from('orders').update({ stock_deducted: true }).eq('id', order.id);
+    } catch {
+      // Ignored if column not present in schema
     }
 
     // Update customer previous_balance in profiles

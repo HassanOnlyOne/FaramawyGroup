@@ -4,30 +4,65 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { Product } from '@/lib/types';
-import { Search, Plus, Edit, Trash2, CheckCircle, XCircle } from 'lucide-react';
+import { Search, Plus, Edit, Trash2, CheckCircle, XCircle, RefreshCw, AlertTriangle } from 'lucide-react';
 import { useNumberFormat } from '@/context/number-format-context';
+import { createClient } from '@/lib/supabase/client';
 
 export default function AdminProductsPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
   const { formatPriceShort, formatNumber } = useNumberFormat();
 
-  useEffect(() => {
-    fetchProducts();
-  }, []);
-
-  const fetchProducts = async () => {
+  const fetchProducts = async (isBackground = false) => {
+    if (!isBackground) setRefreshing(true);
     try {
-      const res = await fetch(`/api/products?limit=100&t=${Date.now()}`);
+      const res = await fetch(`/api/products?limit=200&t=${Date.now()}`, {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache' }
+      });
       const data = await res.json();
       setProducts(data.products || data.data || []);
     } catch (error) {
       console.error('Error fetching products:', error);
     } finally {
       setIsLoading(false);
+      setRefreshing(false);
     }
   };
+
+  useEffect(() => {
+    fetchProducts();
+
+    // 1. Auto-polling interval every 8 seconds for live stock sync
+    const interval = setInterval(() => {
+      fetchProducts(true);
+    }, 8000);
+
+    // 2. Refresh on window focus
+    const onFocus = () => fetchProducts(true);
+    window.addEventListener('focus', onFocus);
+
+    // 3. Supabase Realtime channel subscription
+    const supabase = createClient();
+    const channel = supabase
+      .channel('admin-products-stock-realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'products' },
+        () => {
+          fetchProducts(true);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   const toggleActive = async (id: string, currentStatus: boolean) => {
     try {
@@ -36,7 +71,7 @@ export default function AdminProductsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ is_active: !currentStatus })
       });
-      fetchProducts();
+      fetchProducts(true);
     } catch (error) {
       console.error('Error updating product status:', error);
     }
@@ -67,10 +102,21 @@ export default function AdminProductsPage() {
             <h1 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white">إدارة المنتجات والأصناف</h1>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">تعديل أسعار الجملة، الكميات، وإضافة أصناف جديدة</p>
           </div>
-          <Link href="/admin/products/new" className="btn-primary py-2.5 px-6 rounded-xl font-bold flex items-center gap-2 shadow text-xs">
-            <Plus className="w-4 h-4" />
-            <span>إضافة صنف جديد</span>
-          </Link>
+          <div className="flex items-center gap-3 w-full sm:w-auto">
+            <button
+              onClick={() => fetchProducts(false)}
+              disabled={refreshing}
+              className="btn-secondary py-2.5 px-4 rounded-xl font-bold flex items-center gap-2 shadow text-xs"
+              title="تحديث أرصدة المخزون فورياً"
+            >
+              <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+              <span>تحديث الأرصدة</span>
+            </button>
+            <Link href="/admin/products/new" className="btn-primary py-2.5 px-6 rounded-xl font-bold flex items-center gap-2 shadow text-xs">
+              <Plus className="w-4 h-4" />
+              <span>إضافة صنف جديد</span>
+            </Link>
+          </div>
         </div>
 
         <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
@@ -126,9 +172,25 @@ export default function AdminProductsPage() {
                       {formatPriceShort(product.base_price)} /{product.wholesale_unit || product.unit || 'عبوة'}
                     </td>
                     <td className="px-5 py-4">
-                      <span className={`font-bold font-mono text-xs ${product.stock_quantity <= (product.low_stock_threshold || 10) ? 'text-red-600 dark:text-red-400' : 'text-emerald-700 dark:text-emerald-400'}`}>
-                        {formatNumber(product.stock_quantity)}
-                      </span>
+                      <div className="flex flex-col">
+                        <div className="flex items-center gap-1.5 font-bold font-mono text-sm">
+                          <span className={product.stock_quantity <= 0 ? 'text-red-600 dark:text-red-400 font-black' : product.stock_quantity <= (product.low_stock_threshold || 10) ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-700 dark:text-emerald-400'}>
+                            {formatNumber(product.stock_quantity)}
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-sans font-normal">
+                            {product.wholesale_unit || product.unit || 'عبوة'}
+                          </span>
+                        </div>
+                        {product.stock_quantity <= 0 ? (
+                          <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-red-600 dark:text-red-400 mt-0.5">
+                            <AlertTriangle className="w-3 h-3" /> نفد المخزون
+                          </span>
+                        ) : product.stock_quantity <= (product.low_stock_threshold || 10) ? (
+                          <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-amber-600 dark:text-amber-400 mt-0.5">
+                            <AlertTriangle className="w-3 h-3" /> مخزون حرج
+                          </span>
+                        ) : null}
+                      </div>
                     </td>
                     <td className="px-5 py-4 text-center">
                       <button onClick={() => toggleActive(product.id, product.is_active)} className="inline-block">
