@@ -95,8 +95,17 @@ export default function CartPage() {
                           className="w-12 h-9 text-center font-bold text-slate-900 dark:text-white border-x border-slate-200 dark:border-slate-700 outline-none bg-transparent font-mono text-sm"
                         />
                         <button 
-                          onClick={() => updateQuantity(item.product.id, item.quantity + 1)}
-                          className="w-9 h-9 flex items-center justify-center text-slate-500 hover:bg-white dark:hover:bg-slate-700 hover:text-slate-900 transition-colors"
+                          onClick={() => {
+                            const maxStock = Math.max(0, Number(item.product.stock_quantity ?? 9999));
+                            if (item.quantity >= maxStock) {
+                              alert(`الحد الأقصى المتاح في المخزن هو ${maxStock} ${item.product.wholesale_unit || item.product.unit || 'عبوة'}`);
+                              return;
+                            }
+                            updateQuantity(item.product.id, item.quantity + 1);
+                          }}
+                          disabled={item.quantity >= (item.product.stock_quantity ?? 9999)}
+                          className="w-9 h-9 flex items-center justify-center text-slate-500 hover:bg-white dark:hover:bg-slate-700 hover:text-slate-900 disabled:opacity-40 transition-colors"
+                          title="زيادة الكمية"
                         >
                           <Plus className="w-3.5 h-3.5" />
                         </button>

@@ -54,7 +54,7 @@ async function handleProductUpdate(req: NextRequest, id: string) {
     const { 
       name, sku, category_id, description, images, image_url,
       unit, base_price, stock_quantity, low_stock_threshold, 
-      is_active, pricing_tiers, ...rest 
+      is_active, is_paused, pricing_tiers, ...rest 
     } = body;
 
     const updatePayload: any = {
@@ -70,6 +70,7 @@ async function handleProductUpdate(req: NextRequest, id: string) {
     if (stock_quantity !== undefined) updatePayload.stock_quantity = Number(stock_quantity);
     if (low_stock_threshold !== undefined) updatePayload.low_stock_threshold = Number(low_stock_threshold);
     if (is_active !== undefined) updatePayload.is_active = Boolean(is_active);
+    if (is_paused !== undefined) updatePayload.is_paused = Boolean(is_paused);
 
     const finalImage = image_url || (Array.isArray(images) && images[0] ? images[0] : null);
     if (finalImage) {
@@ -81,6 +82,11 @@ async function handleProductUpdate(req: NextRequest, id: string) {
     // Try update with admin client first to bypass strict auth/RLS if needed, or fallback to supabase
     const adminClient = createAdminClient();
     let updateResult = await adminClient.from('products').update(updatePayload).eq('id', id).select().single();
+    
+    if (updateResult.error && updateResult.error.message?.includes('is_paused')) {
+      delete updatePayload.is_paused;
+      updateResult = await adminClient.from('products').update(updatePayload).eq('id', id).select().single();
+    }
     
     if (updateResult.error) {
       updateResult = await supabase.from('products').update(updatePayload).eq('id', id).select().single();

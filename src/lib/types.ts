@@ -52,6 +52,7 @@ export interface Product {
   low_stock_threshold: number;
   min_order_quantity: number;
   is_active: boolean;
+  is_paused?: boolean;
   created_at: string;
   updated_at: string;
   category?: Category;

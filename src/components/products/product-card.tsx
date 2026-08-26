@@ -2,11 +2,12 @@
 
 import * as React from 'react';
 import Link from 'next/link';
-import { ShoppingCart, Plus, Minus, Tag, Package, AlertCircle } from 'lucide-react';
+import { ShoppingCart, Plus, Minus, Tag, Package, AlertCircle, Pause } from 'lucide-react';
 import { Product } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useCart } from '@/components/cart/cart-provider';
+import { useToast } from '@/components/ui/toast';
 import { calculateTieredPrice } from '@/lib/pricing';
 import { useNumberFormat } from '@/context/number-format-context';
 import { cn } from '@/lib/utils';
@@ -51,7 +52,14 @@ export class ProductCardErrorBoundary extends React.Component<
 function ProductCardInner({ product }: ProductCardProps) {
   const safeProduct = product || ({} as Product);
   const { addItem } = useCart();
+  const { toast } = useToast();
   const { formatPriceShort, formatNumber } = useNumberFormat();
+
+  const isPaused = Boolean(safeProduct?.is_paused);
+  const stockQty = Number(safeProduct?.stock_quantity ?? 0);
+  const isOutOfStock = stockQty <= 0;
+  const unitLabel = safeProduct?.wholesale_unit || safeProduct?.unit || 'عبوة';
+  const productName = safeProduct?.name || 'منتج غير محدد';
 
   const moq = Math.max(1, Number(safeProduct?.min_order_quantity || 1));
   const [quantity, setQuantity] = React.useState(moq);
@@ -70,22 +78,60 @@ function ProductCardInner({ product }: ProductCardProps) {
     maxDiscount = Math.round(((basePrice - minPrice) / basePrice) * 100);
   }
 
-  const stockQty = Number(safeProduct?.stock_quantity ?? 100);
-  const isOutOfStock = stockQty <= 0;
+  const handleIncrease = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (isPaused || isOutOfStock) return;
+    if (quantity >= stockQty) {
+      toast({
+        title: 'الحد الأقصى للمخزون',
+        description: `الحد الأقصى المتاح في المخزن هو ${formatNumber(stockQty)} ${unitLabel}`,
+        type: 'warning'
+      });
+      return;
+    }
+    setQuantity(quantity + 1);
+  };
+
+  const handleDecrease = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (isPaused || isOutOfStock) return;
+    setQuantity(Math.max(moq, quantity - 1));
+  };
 
   const handleAdd = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (isPaused) {
+      toast({ title: 'تنبيه', description: 'هذا الصنف متوقف مؤقتاً عن الطلب حالياً', type: 'warning' });
+      return;
+    }
+    if (isOutOfStock) {
+      toast({ title: 'تنبيه', description: 'نفد هذا الصنف من المخزون حالياً', type: 'warning' });
+      return;
+    }
+    if (quantity > stockQty) {
+      toast({
+        title: 'الحد الأقصى للمخزون',
+        description: `الحد الأقصى المتاح في المخزن هو ${formatNumber(stockQty)} ${unitLabel}`,
+        type: 'warning'
+      });
+      setQuantity(stockQty);
+      return;
+    }
     addItem(safeProduct, quantity);
     setQuantity(moq);
+    toast({
+      title: 'تمت الإضافة للسلة',
+      description: `تم إضافة ${formatNumber(quantity)} ${unitLabel} من (${productName})`,
+      type: 'success'
+    });
   };
 
   const imagesList = Array.isArray(safeProduct?.images) ? safeProduct.images : [];
   const rawImg = imagesList[0] || (safeProduct as any)?.image || (safeProduct as any)?.image_url || '';
   const isInvalidImg = !rawImg || typeof rawImg !== 'string' || rawImg.includes('unsplash.com') || rawImg.trim() === '';
-
-  const productName = safeProduct?.name || 'منتج غير محدد';
-  const unitLabel = safeProduct?.wholesale_unit || safeProduct?.unit || 'عبوة';
 
   return (
     <div
@@ -93,7 +139,7 @@ function ProductCardInner({ product }: ProductCardProps) {
       dir="rtl"
       suppressHydrationWarning
     >
-      {/* Top Bar: SKU + Category */}
+      {/* Top Bar: SKU + Category + Paused/Stock badge */}
       <div className="flex items-center justify-between px-4 py-2 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-100 dark:border-slate-800">
         <div className="flex items-center gap-2">
           {safeProduct?.sku_code && (
@@ -105,9 +151,14 @@ function ProductCardInner({ product }: ProductCardProps) {
             <span className="text-[10px] text-slate-400 dark:text-slate-400">{safeProduct.category.name}</span>
           )}
         </div>
-        {isOutOfStock && (
+        {isPaused ? (
+          <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/30 flex items-center gap-1">
+            <Pause className="w-3 h-3 fill-amber-500 text-amber-500" />
+            متوقف مؤقتاً
+          </span>
+        ) : isOutOfStock ? (
           <Badge variant="error" size="sm">نفد المخزون</Badge>
-        )}
+        ) : null}
       </div>
 
       {/* Product Image Container */}
@@ -166,45 +217,61 @@ function ProductCardInner({ product }: ProductCardProps) {
 
       {/* Action Footer */}
       <div className="p-3 bg-slate-50 dark:bg-slate-800/60 border-t border-slate-100 dark:border-slate-800 flex items-center gap-2">
-        {/* Quantity Controls */}
-        <div className="flex items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-1 shadow-sm">
+        {isPaused ? (
           <button
             type="button"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setQuantity(Math.max(moq, quantity - 1));
-            }}
-            className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+            disabled
+            className="w-full py-2.5 px-3 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 bg-amber-500/10 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 border border-amber-500/30 cursor-not-allowed"
           >
-            <Minus className="w-3.5 h-3.5" />
+            <Pause className="w-3.5 h-3.5 fill-amber-500 text-amber-500" />
+            <span>غير متاح للطلب حالياً</span>
           </button>
-          <span className="w-8 text-center font-bold text-xs font-mono text-slate-800 dark:text-slate-200">
-            {formatNumber(quantity)}
-          </span>
+        ) : isOutOfStock ? (
           <button
             type="button"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setQuantity(quantity + 1);
-            }}
-            className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+            disabled
+            className="w-full py-2.5 px-3 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border border-slate-200 dark:border-slate-700 cursor-not-allowed"
           >
-            <Plus className="w-3.5 h-3.5" />
+            <span>نفد المخزون</span>
           </button>
-        </div>
+        ) : (
+          <>
+            {/* Quantity Controls */}
+            <div className="flex items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-1 shadow-sm">
+              <button
+                type="button"
+                onClick={handleDecrease}
+                disabled={quantity <= moq}
+                className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 transition-colors"
+                title="تقليل الكمية"
+              >
+                <Minus className="w-3.5 h-3.5" />
+              </button>
+              <span className="w-8 text-center font-bold text-xs font-mono text-slate-800 dark:text-slate-200">
+                {formatNumber(quantity)}
+              </span>
+              <button
+                type="button"
+                onClick={handleIncrease}
+                disabled={quantity >= stockQty}
+                className="w-7 h-7 flex items-center justify-center text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 transition-colors"
+                title="زيادة الكمية"
+              >
+                <Plus className="w-3.5 h-3.5" />
+              </button>
+            </div>
 
-        {/* Add Button */}
-        <button
-          type="button"
-          onClick={handleAdd}
-          disabled={isOutOfStock}
-          className="flex-1 btn-primary py-2 px-3 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 shadow-sm disabled:opacity-50"
-        >
-          <ShoppingCart className="w-3.5 h-3.5" />
-          <span>إضافة للسلة</span>
-        </button>
+            {/* Add Button */}
+            <button
+              type="button"
+              onClick={handleAdd}
+              className="flex-1 btn-primary py-2 px-3 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 shadow-sm active:scale-98 transition-transform"
+            >
+              <ShoppingCart className="w-3.5 h-3.5" />
+              <span>إضافة للسلة</span>
+            </button>
+          </>
+        )}
       </div>
     </div>
   );

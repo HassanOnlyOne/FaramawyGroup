@@ -151,6 +151,39 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    // 1. Strict Server-Side Validation: Validate stock constraints & paused status
+    const aggregatedQty = new Map<string, number>();
+    for (const item of items) {
+      const pId = item.product_id || item.product?.id || item.id;
+      const q = Number(item.quantity || 0);
+      if (pId && q > 0) {
+        aggregatedQty.set(pId, (aggregatedQty.get(pId) || 0) + q);
+      }
+    }
+
+    for (const [pId, totalRequested] of aggregatedQty.entries()) {
+      const { data: dbProd } = await adminClient
+        .from('products')
+        .select('name, stock_quantity, wholesale_unit, unit, is_paused, is_active')
+        .eq('id', pId)
+        .maybeSingle();
+
+      if (dbProd) {
+        if (dbProd.is_paused) {
+          return NextResponse.json({
+            error: `عفواً، صنف (${dbProd.name}) متوقف مؤقتاً عن الطلب حالياً`
+          }, { status: 400 });
+        }
+        const availStock = Number(dbProd.stock_quantity ?? 0);
+        if (totalRequested > availStock) {
+          const unitName = dbProd.wholesale_unit || dbProd.unit || 'كرتونة';
+          return NextResponse.json({
+            error: `عفواً، الكمية المطلوبة من صنف (${dbProd.name}) غير متوفرة حالياً (المتبقي في المخزن: ${availStock} ${unitName})`
+          }, { status: 400 });
+        }
+      }
+    }
+
     let subtotal = 0;
     const orderItemsToInsert = [];
 

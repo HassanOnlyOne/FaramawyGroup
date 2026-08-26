@@ -66,12 +66,29 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   }, [paymentMethod, isMounted]);
 
   const addItem = React.useCallback((product: Product, quantity: number) => {
+    if (product.is_paused) {
+      alert(`عفواً، صنف (${product.name}) متوقف مؤقتاً عن الطلب حالياً`);
+      return;
+    }
+
+    const maxStock = Math.max(0, Number(product.stock_quantity ?? 0));
+    if (maxStock <= 0) {
+      alert(`عفواً، صنف (${product.name}) نفد من المخزون حالياً`);
+      return;
+    }
+
     const moq = product.min_order_quantity || 1;
     const finalQty = Math.max(moq, quantity);
     
     setItems((prev) => {
       const existing = prev.find((item) => item.product_id === product.id);
-      const newQuantity = existing ? existing.quantity + finalQty : finalQty;
+      let newQuantity = existing ? existing.quantity + finalQty : finalQty;
+      
+      if (newQuantity > maxStock) {
+        newQuantity = maxStock;
+        alert(`تم ضبط الكمية على الحد الأقصى المتاح في المخزن: ${maxStock} ${product.wholesale_unit || product.unit || 'كرتونة'}`);
+      }
+
       const unitPrice = calculateTieredPrice(product.base_price, newQuantity, product.pricing_tiers);
 
       if (existing) {
@@ -107,10 +124,18 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       if (quantity < moq) {
         return prev.filter((i) => i.product_id !== productId);
       }
+
+      const maxStock = Math.max(0, Number(item.product.stock_quantity ?? 9999));
+      let finalQuantity = quantity;
+      if (finalQuantity > maxStock) {
+        finalQuantity = maxStock;
+        alert(`الحد الأقصى المتاح في المخزن هو ${maxStock} ${item.product.wholesale_unit || item.product.unit || 'كرتونة'}`);
+      }
+
       return prev.map((i) => {
         if (i.product_id === productId) {
-          const unitPrice = calculateTieredPrice(i.product.base_price, quantity, i.product.pricing_tiers);
-          return { ...i, quantity, unit_price: unitPrice, appliedPrice: unitPrice, total_price: unitPrice * quantity };
+          const unitPrice = calculateTieredPrice(i.product.base_price, finalQuantity, i.product.pricing_tiers);
+          return { ...i, quantity: finalQuantity, unit_price: unitPrice, appliedPrice: unitPrice, total_price: unitPrice * finalQuantity };
         }
         return i;
       });

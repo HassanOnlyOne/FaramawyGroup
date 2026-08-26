@@ -116,13 +116,29 @@ export function CartDrawer() {
                         </button>
                         <span className="text-sm font-bold w-8 text-center text-slate-800 dark:text-slate-200">{item.quantity}</span>
                         <button 
-                          onClick={() => updateQuantity(item.product_id, item.quantity + 1)}
-                          className="h-7 w-7 flex items-center justify-center text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-md"
+                          onClick={() => {
+                            const maxStock = Math.max(0, Number(item.product.stock_quantity ?? 9999));
+                            if (item.quantity >= maxStock) {
+                              alert(`الحد الأقصى المتاح في المخزن هو ${maxStock} ${item.product.wholesale_unit || item.product.unit || 'كرتونة'}`);
+                              return;
+                            }
+                            updateQuantity(item.product_id, item.quantity + 1);
+                          }}
+                          disabled={item.quantity >= (item.product.stock_quantity ?? 9999)}
+                          className="h-7 w-7 flex items-center justify-center text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-md disabled:opacity-40"
+                          title="زيادة الكمية"
                         >
                           <Plus className="h-3 w-3" />
                         </button>
                       </div>
-                      <span className="font-bold text-brand-700 dark:text-emerald-400 font-mono">{item.total_price.toLocaleString('ar-EG')} ج.م</span>
+                      <div className="flex items-center gap-2">
+                        {item.product.is_paused && (
+                          <span className="text-[10px] bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 px-1.5 py-0.5 rounded font-bold">
+                            متوقف
+                          </span>
+                        )}
+                        <span className="font-bold text-brand-700 dark:text-emerald-400 font-mono">{item.total_price.toLocaleString('ar-EG')} ج.م</span>
+                      </div>
                     </div>
                   </div>
                 </div>

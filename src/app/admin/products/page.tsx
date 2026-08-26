@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { Product } from '@/lib/types';
-import { Search, Plus, Edit, Trash2, CheckCircle, XCircle, RefreshCw, AlertTriangle } from 'lucide-react';
+import { Search, Plus, Edit, Trash2, CheckCircle, XCircle, RefreshCw, AlertTriangle, Pause, Play } from 'lucide-react';
 import { useNumberFormat } from '@/context/number-format-context';
 import { createClient } from '@/lib/supabase/client';
 
@@ -74,6 +74,19 @@ export default function AdminProductsPage() {
       fetchProducts(true);
     } catch (error) {
       console.error('Error updating product status:', error);
+    }
+  };
+
+  const togglePause = async (id: string, currentPaused: boolean) => {
+    try {
+      await fetch(`/api/products/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ is_paused: !currentPaused })
+      });
+      fetchProducts(true);
+    } catch (error) {
+      console.error('Error toggling pause status:', error);
     }
   };
 
@@ -193,20 +206,66 @@ export default function AdminProductsPage() {
                       </div>
                     </td>
                     <td className="px-5 py-4 text-center">
-                      <button onClick={() => toggleActive(product.id, product.is_active)} className="inline-block">
-                        {product.is_active ? (
-                          <CheckCircle className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
-                        ) : (
-                          <XCircle className="w-5 h-5 text-slate-300 dark:text-slate-600" />
-                        )}
-                      </button>
+                      {product.is_paused ? (
+                        <button
+                          onClick={() => togglePause(product.id, true)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 shadow-xs hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-colors"
+                          title="الصنف متوقف مؤقتاً عن الطلب — انقر للاستئناف"
+                        >
+                          <Pause className="w-3.5 h-3.5 fill-amber-500 text-amber-500" />
+                          <span>متوقف مؤقتاً</span>
+                        </button>
+                      ) : product.is_active ? (
+                        <button
+                          onClick={() => togglePause(product.id, false)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 shadow-xs hover:bg-emerald-100 dark:hover:bg-emerald-900/60 transition-colors"
+                          title="الصنف نشط ومتاح للطلب — انقر للإيقاف المؤقت"
+                        >
+                          <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />
+                          <span>نشط</span>
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => toggleActive(product.id, false)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-100 dark:bg-slate-800 text-slate-500 border border-slate-200 dark:border-slate-700 shadow-xs hover:bg-slate-200 transition-colors"
+                          title="الصنف معطل بالكامل — انقر للتفعيل"
+                        >
+                          <XCircle className="w-3.5 h-3.5 text-slate-400" />
+                          <span>معطل</span>
+                        </button>
+                      )}
                     </td>
                     <td className="px-5 py-4 text-center">
                       <div className="flex items-center justify-center gap-2">
-                        <Link href={`/admin/products/${product.id}`} className="p-1.5 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-lg transition-colors border border-slate-200 dark:border-slate-700">
+                        {/* Toggle Pause / Resume Button */}
+                        <button
+                          onClick={() => togglePause(product.id, Boolean(product.is_paused))}
+                          className={`p-1.5 rounded-xl transition-colors border shadow-xs ${
+                            product.is_paused
+                              ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100'
+                              : 'bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 border-amber-200 dark:border-amber-800 hover:bg-amber-100'
+                          }`}
+                          title={product.is_paused ? 'استئناف الطلب وتفعيل الصنف' : 'إيقاف الطلب مؤقتاً'}
+                        >
+                          {product.is_paused ? (
+                            <Play className="w-4 h-4 fill-emerald-600 dark:fill-emerald-400" />
+                          ) : (
+                            <Pause className="w-4 h-4 fill-amber-600 dark:fill-amber-400" />
+                          )}
+                        </button>
+
+                        <Link 
+                          href={`/admin/products/${product.id}`} 
+                          className="p-1.5 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-xl transition-colors border border-slate-200 dark:border-slate-700 shadow-xs"
+                          title="تعديل الصنف والأسعار"
+                        >
                           <Edit className="w-4 h-4" />
                         </Link>
-                        <button onClick={() => deleteProduct(product.id)} className="p-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors border border-slate-200 dark:border-slate-700">
+                        <button 
+                          onClick={() => deleteProduct(product.id)} 
+                          className="p-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-xl transition-colors border border-slate-200 dark:border-slate-700 shadow-xs"
+                          title="حذف الصنف"
+                        >
                           <Trash2 className="w-4 h-4" />
                         </button>
                       </div>

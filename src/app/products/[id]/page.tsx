@@ -20,7 +20,8 @@ import {
   Tag, 
   CheckCircle2, 
   AlertTriangle,
-  Building2
+  Building2,
+  Pause
 } from 'lucide-react';
 
 export default function ProductDetailPage() {
@@ -73,6 +74,7 @@ export default function ProductDetailPage() {
 
   if (!product) return null;
 
+  const isPaused = Boolean(product.is_paused);
   const minOrderQty = product.min_order_quantity || 1;
   const isOutOfStock = product.stock_quantity <= 0;
   const maxAvailable = Math.max(0, product.stock_quantity || 0);
@@ -83,6 +85,15 @@ export default function ProductDetailPage() {
   const unitLabel = product.wholesale_unit || product.unit || 'كرتونة';
 
   const handleAddToCart = () => {
+    if (isPaused) {
+      toast({
+        title: 'تنبيه',
+        description: 'هذا الصنف متوقف مؤقتاً عن استقبال الطلبات حالياً',
+        type: 'warning'
+      });
+      return;
+    }
+
     if (isOutOfStock) {
       toast({
         title: 'عذراً',
@@ -92,12 +103,13 @@ export default function ProductDetailPage() {
       return;
     }
 
-    if (quantity > product.stock_quantity) {
+    if (quantity > maxAvailable) {
       toast({
-        title: 'تنبيه المخزون',
-        description: `الكمية المتاحة في المخزن حالياً هي ${formatNumber(product.stock_quantity)} ${unitLabel} فقط`,
-        type: 'error'
+        title: 'الحد الأقصى للمخزون',
+        description: `الحد الأقصى المتاح في المخزن هو ${formatNumber(maxAvailable)} ${unitLabel}`,
+        type: 'warning'
       });
+      setQuantity(maxAvailable);
       return;
     }
 
@@ -116,7 +128,17 @@ export default function ProductDetailPage() {
   };
 
   const handleQuantityChange = (val: number) => {
+    if (isPaused || isOutOfStock) return;
     const safeMin = Math.max(minOrderQty, 1);
+    if (val > maxAvailable) {
+      toast({
+        title: 'الحد الأقصى للمخزون',
+        description: `الحد الأقصى المتاح في المخزن هو ${formatNumber(maxAvailable)} ${unitLabel}`,
+        type: 'warning'
+      });
+      setQuantity(maxAvailable);
+      return;
+    }
     const updated = Math.max(safeMin, val);
     setQuantity(updated);
   };
@@ -176,9 +198,14 @@ export default function ProductDetailPage() {
                 );
               })()}
 
-              {/* In-Stock / Out of Stock Floating Badge */}
+              {/* In-Stock / Out of Stock / Paused Floating Badge */}
               <div className="absolute top-4 right-4">
-                {isOutOfStock ? (
+                {isPaused ? (
+                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold bg-amber-500 text-white shadow-md backdrop-blur-xs">
+                    <Pause className="w-3.5 h-3.5 fill-white" />
+                    متوقف مؤقتاً
+                  </span>
+                ) : isOutOfStock ? (
                   <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl text-xs font-bold bg-red-500/90 text-white shadow-md backdrop-blur-xs">
                     <AlertTriangle className="w-3.5 h-3.5" />
                     نفد المخزون
@@ -277,9 +304,14 @@ export default function ProductDetailPage() {
                 )}
               </div>
 
-              {/* Stock Status Badge */}
-              <div>
-                {!isOutOfStock ? (
+              {/* Stock Status Badge & Paused Alert */}
+              <div className="space-y-2">
+                {isPaused ? (
+                  <div className="bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-500/30 px-4 py-2.5 rounded-2xl font-bold text-xs sm:text-sm inline-flex items-center gap-2.5 shadow-xs">
+                    <Pause className="w-4 h-4 fill-amber-500 text-amber-500" />
+                    <span>هذا الصنف متوقف مؤقتاً عن استقبال طلبات جديدة حالياً</span>
+                  </div>
+                ) : !isOutOfStock ? (
                   <div className="bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 px-4 py-2.5 rounded-2xl font-bold text-xs sm:text-sm inline-flex items-center gap-2.5 shadow-xs">
                     <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></div>
                     <span>المتوفر في المخزن: {formatNumber(product.stock_quantity)} {unitLabel}</span>
@@ -317,7 +349,7 @@ export default function ProductDetailPage() {
                     <button 
                       type="button"
                       onClick={() => handleQuantityChange(quantity - 1)}
-                      disabled={quantity <= minOrderQty || isOutOfStock}
+                      disabled={quantity <= minOrderQty || isOutOfStock || isPaused}
                       className="w-12 h-12 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 transition-colors font-bold text-lg"
                       title="تقليل الكمية"
                     >
@@ -328,14 +360,14 @@ export default function ProductDetailPage() {
                       min={minOrderQty}
                       max={maxAvailable || 9999}
                       value={quantity}
-                      disabled={isOutOfStock}
+                      disabled={isOutOfStock || isPaused}
                       onChange={(e) => handleQuantityChange(parseInt(e.target.value) || minOrderQty)}
-                      className="w-16 h-12 text-center font-bold text-base font-mono bg-transparent text-slate-900 dark:text-white border-x border-slate-200 dark:border-slate-700 outline-none"
+                      className="w-16 h-12 text-center font-bold text-base font-mono bg-transparent text-slate-900 dark:text-white border-x border-slate-200 dark:border-slate-700 outline-none disabled:opacity-50"
                     />
                     <button 
                       type="button"
                       onClick={() => handleQuantityChange(quantity + 1)}
-                      disabled={isOutOfStock || (product.stock_quantity > 0 && quantity >= product.stock_quantity)}
+                      disabled={isOutOfStock || isPaused || (product.stock_quantity > 0 && quantity >= product.stock_quantity)}
                       className="w-12 h-12 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 disabled:opacity-40 transition-colors font-bold text-lg"
                       title="زيادة الكمية"
                     >
@@ -356,19 +388,34 @@ export default function ProductDetailPage() {
               </div>
 
               {/* Add to Cart Button */}
-              <button 
-                type="button"
-                onClick={handleAddToCart}
-                disabled={isOutOfStock}
-                className="w-full bg-gradient-to-l from-brand-700 via-brand-600 to-brand-700 hover:from-brand-800 hover:to-brand-700 text-white font-bold py-4 px-6 rounded-2xl shadow-lg shadow-brand-600/30 flex items-center justify-center gap-3 text-base sm:text-lg transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-              >
-                <ShoppingCart className="w-5 h-5 sm:w-6 sm:h-6" />
-                <span>
-                  {isOutOfStock 
-                    ? 'نفد المخزون حالياً' 
-                    : `إضافة إلى السلة — ${formatPriceShort(totalPrice)}`}
-                </span>
-              </button>
+              {isPaused ? (
+                <button 
+                  type="button"
+                  disabled
+                  className="w-full bg-amber-500/10 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-500/30 font-bold py-4 px-6 rounded-2xl flex items-center justify-center gap-3 text-base sm:text-lg cursor-not-allowed"
+                >
+                  <Pause className="w-5 h-5 fill-amber-500 text-amber-500" />
+                  <span>غير متاح للطلب حالياً (متوقف مؤقتاً)</span>
+                </button>
+              ) : isOutOfStock ? (
+                <button 
+                  type="button"
+                  disabled
+                  className="w-full bg-slate-200 dark:bg-slate-800 text-slate-400 dark:text-slate-500 border border-slate-300 dark:border-slate-700 font-bold py-4 px-6 rounded-2xl flex items-center justify-center gap-3 text-base sm:text-lg cursor-not-allowed"
+                >
+                  <AlertTriangle className="w-5 h-5" />
+                  <span>نفد المخزون حالياً</span>
+                </button>
+              ) : (
+                <button 
+                  type="button"
+                  onClick={handleAddToCart}
+                  className="w-full bg-gradient-to-l from-brand-700 via-brand-600 to-brand-700 hover:from-brand-800 hover:to-brand-700 text-white font-bold py-4 px-6 rounded-2xl shadow-lg shadow-brand-600/30 flex items-center justify-center gap-3 text-base sm:text-lg transition-all active:scale-[0.99] cursor-pointer"
+                >
+                  <ShoppingCart className="w-5 h-5 sm:w-6 sm:h-6" />
+                  <span>إضافة إلى السلة — {formatPriceShort(totalPrice)}</span>
+                </button>
+              )}
             </div>
           </div>
         </div>
