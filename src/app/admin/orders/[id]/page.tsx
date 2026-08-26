@@ -9,6 +9,7 @@ import { Printer, ArrowRight, Loader2, Edit, Plus, Trash2 } from 'lucide-react';
 import { useToast } from '@/components/ui/toast';
 import { createClient } from '@/lib/supabase/client';
 import { useNumberFormat } from '@/context/number-format-context';
+import { recordAuditLog } from '@/lib/audit-client';
 import Link from 'next/link';
 
 export default function AdminOrderDetail() {
@@ -322,6 +323,11 @@ export default function AdminOrderDetail() {
   };
 
   const handlePrint = () => {
+    recordAuditLog({
+      action_type: 'طباعة فاتورة',
+      category: 'المبيعات والفواتير',
+      details: `تمت طباعة فاتورة بيع للطلب #${order?.invoice_no || order?.order_number || id} للعميل (${order?.customer?.full_name || order?.customer?.store_name || 'عميل'})`
+    });
     window.print();
   };
 

@@ -113,14 +113,20 @@ async function handleUpdateRole(request: NextRequest) {
     }
 
     // 6. Record in audit_logs
+    const changes: string[] = [];
+    if (updatePayload.role) changes.push(`الرتبة: ${updatePayload.role}`);
+    if (updatePayload.is_credit_enabled !== undefined) changes.push(`الآجل: ${updatePayload.is_credit_enabled ? 'مفعل' : 'معطل'}`);
+    if (updatePayload.credit_limit !== undefined) changes.push(`الحد الائتماني: ${updatePayload.credit_limit} ج.م`);
+    const detailsStr = changes.length > 0 ? changes.join(' | ') : 'تحديث الصلاحيات';
+
     await logAction({
       actionType: 'تعديل رتبة وصلاحيات',
       category: 'الأمان والصلاحيات',
-      details: `تم تحديث رتبة وصلاحيات المستخدم (${updatedProfile?.full_name || targetUserId}) إلى (${updatePayload.role || updatedProfile?.role})`,
+      details: `تم تحديث المستخدم (${updatedProfile?.full_name || targetUserId}) [${detailsStr}]`,
       user: {
         id: callerUser.id,
-        name: callerProfile?.full_name || callerUser.email || 'إدارة النظام',
-        role: callerProfile?.role || 'المدير العام'
+        name: callerProfile?.full_name || callerUser.email,
+        role: callerProfile?.role
       }
     });
 

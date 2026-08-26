@@ -1,6 +1,5 @@
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { headers } from 'next/headers';
 
 export type AuditCategory =
   | 'المبيعات والفواتير'
@@ -8,17 +7,12 @@ export type AuditCategory =
   | 'الخزينة والتحصيلات'
   | 'الأجل والعملاء'
   | 'الأمان والصلاحيات'
-  | 'عام'
-  | 'sales'
-  | 'purchases'
-  | 'treasury'
-  | 'customers'
-  | 'security'
-  | 'general';
+  | 'عام وعمليات أخرى'
+  | 'عام';
 
 export interface LogActionParams {
   actionType: string;
-  category: AuditCategory;
+  category: AuditCategory | string;
   details: string;
   user?: { id?: string; name?: string; role?: string };
   ipAddress?: string;
@@ -33,23 +27,58 @@ export function normalizeCategory(cat: string): string {
   switch (c) {
     case 'المبيعات والفواتير':
     case 'sales':
+    case 'orders':
+    case 'invoices':
       return 'المبيعات والفواتير';
     case 'المشتريات والموردين':
     case 'purchases':
+    case 'suppliers':
       return 'المشتريات والموردين';
     case 'الخزينة والتحصيلات':
     case 'treasury':
+    case 'expenses':
+    case 'payments':
       return 'الخزينة والتحصيلات';
     case 'الأجل والعملاء':
     case 'customers':
+    case 'credit':
       return 'الأجل والعملاء';
     case 'الأمان والصلاحيات':
     case 'security':
+    case 'permissions':
+    case 'roles':
+    case 'users':
       return 'الأمان والصلاحيات';
     case 'عام':
+    case 'عام وعمليات أخرى':
     case 'general':
+    case 'products':
+    case 'inventory':
     default:
-      return 'عام';
+      return 'عام وعمليات أخرى';
+  }
+}
+
+// Translate system roles to professional Arabic titles
+export function formatRoleTitle(role?: string): string {
+  const r = String(role || '').toLowerCase().trim();
+  switch (r) {
+    case 'super_owner':
+      return 'مالك النظام';
+    case 'owner':
+      return 'مالك المتجر';
+    case 'admin':
+    case 'manager':
+    case 'المدير العام':
+      return 'مدير عام';
+    case 'staff':
+      return 'مشرف';
+    case 'delegate':
+      return 'مندوب مبيعات';
+    case 'customer':
+      return 'عميل';
+    default:
+      return role || 'مشرف';
   }
 }
 
@@ -68,13 +97,14 @@ export async function logAction({
     const supabase = await createClient();
 
     let userId = user?.id || null;
-    let userName = user?.name || '';
-    let userRole = user?.role || '';
+    let userName = user?.name?.trim() || '';
+    let userRole = user?.role?.trim() || '';
     let ipAddress = customIp || '127.0.0.1';
 
     // 1. Resolve client IP from request headers if available
     if (!customIp) {
       try {
+        const { headers } = await import('next/headers');
         const headerList = await headers();
         const forwardedFor = headerList.get('x-forwarded-for');
         const realIp = headerList.get('x-real-ip');
@@ -88,44 +118,58 @@ export async function logAction({
       }
     }
 
-    // 2. Fetch authenticated user details if not provided
-    if (!userName || !userRole) {
-      try {
+    // 2. Fetch authenticated user details from Supabase if not fully provided
+    try {
+      let authUser: any = null;
+      if (!userId) {
         const { data: authData } = await supabase.auth.getUser();
-        const authUser = authData?.user;
+        authUser = authData?.user;
         if (authUser) {
-          userId = userId || authUser.id;
-          let { data: prof } = await adminClient
-            .from('profiles')
-            .select('full_name, store_name, role')
-            .eq('id', authUser.id)
-            .maybeSingle();
+          userId = authUser.id;
+        }
+      }
 
-          if (!prof) {
-            const fb = await supabase.from('profiles').select('full_name, store_name, role').eq('id', authUser.id).maybeSingle();
-            prof = fb.data;
+      if (userId) {
+        const { data: prof } = await adminClient
+          .from('profiles')
+          .select('full_name, store_name, role, email')
+          .eq('id', userId)
+          .maybeSingle();
+
+        if (prof) {
+          // Priority 1: Real Full Name from profiles table
+          if (prof.full_name && prof.full_name.trim() && prof.full_name !== 'المدير العام') {
+            userName = prof.full_name.trim();
+          } else if (authUser?.user_metadata?.full_name && authUser.user_metadata.full_name !== 'المدير العام') {
+            userName = authUser.user_metadata.full_name.trim();
+          } else if (prof.store_name && prof.store_name.trim()) {
+            userName = prof.store_name.trim();
+          } else if (prof.email) {
+            userName = prof.email.split('@')[0];
           }
 
-          if (prof) {
-            userName = prof.full_name || prof.store_name || authUser.email || 'المدير العام';
-            if (prof.role === 'super_owner') userRole = 'مالك النظام';
-            else if (prof.role === 'admin') userRole = 'المدير العام';
-            else if (prof.role === 'delegate') userRole = 'مندوب مبيعات';
-            else userRole = 'موظف';
-          } else {
-            userName = authUser.email?.split('@')[0] || 'المدير العام';
-            userRole = 'المدير العام';
+          if (!userRole || userRole === 'المدير العام') {
+            userRole = formatRoleTitle(prof.role);
           }
         }
-      } catch {}
+      }
+
+      if (!userName && authUser) {
+        userName = authUser.user_metadata?.full_name || authUser.email?.split('@')[0] || '';
+      }
+    } catch (e) {
+      console.warn('Could not resolve user profile in audit log:', e);
     }
 
-    if (!userName) userName = 'إدارة النظام';
-    if (!userRole) userRole = 'المدير العام';
+    // 3. Prevent duplicate "المدير العام" in both name and role
+    userRole = formatRoleTitle(userRole || 'مدير عام');
+    if (!userName || userName === 'المدير العام' || userName === 'مدير عام') {
+      userName = 'مسؤول الإدارة';
+    }
 
     const normalizedCat = normalizeCategory(category);
 
-    const newLog = {
+    const newLog: any = {
       id: crypto.randomUUID(),
       created_at: new Date().toISOString(),
       user_id: userId,
@@ -139,10 +183,20 @@ export async function logAction({
 
     // Store in memory buffer for instant reflection
     memoryAuditLogs.unshift(newLog);
-    if (memoryAuditLogs.length > 300) memoryAuditLogs.pop();
+    if (memoryAuditLogs.length > 500) memoryAuditLogs.pop();
 
     // Insert into database using adminClient (service role)
     let { data, error } = await adminClient.from('audit_logs').insert([newLog]).select().maybeSingle();
+    
+    // If user_id column doesn't exist yet, retry without user_id
+    if (error && error.message?.includes('user_id')) {
+      const fallbackLog = { ...newLog };
+      delete fallbackLog.user_id;
+      const res = await adminClient.from('audit_logs').insert([fallbackLog]).select().maybeSingle();
+      data = res.data;
+      error = res.error;
+    }
+
     if (error || !data) {
       const fb = await supabase.from('audit_logs').insert([newLog]).select().maybeSingle();
       data = fb.data || newLog;
@@ -164,6 +218,7 @@ export async function recordAuditLog(params: {
   details: string;
   user_name?: string;
   user_role?: string;
+  user_id?: string;
 }) {
   try {
     if (typeof window !== 'undefined') {
@@ -175,9 +230,10 @@ export async function recordAuditLog(params: {
     } else {
       await logAction({
         actionType: params.action_type,
-        category: params.category as AuditCategory,
+        category: params.category,
         details: params.details,
         user: {
+          id: params.user_id,
           name: params.user_name,
           role: params.user_role
         }
@@ -194,10 +250,10 @@ export async function logAuditEvent(params: LogActionParams) {
 }
 
 // Backwards-compatible legacy signature
-export async function logSystemActivity(action_type: string, details: string, category: string = 'عام') {
+export async function logSystemActivity(action_type: string, details: string, category: string = 'عام وعمليات أخرى') {
   return logAction({
     actionType: action_type,
-    category: category as AuditCategory,
+    category,
     details
   });
 }

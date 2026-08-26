@@ -20,6 +20,7 @@ async function getAdminUser(supabase: any) {
 }
 
 import { createAdminClient } from '@/lib/supabase/admin';
+import { logAction } from '@/lib/audit';
 
 export async function GET(
   req: NextRequest,
@@ -116,7 +117,24 @@ async function handleProductUpdate(req: NextRequest, id: string) {
       .eq('id', id)
       .single();
 
-    return NextResponse.json({ data: updatedProduct || updateResult.data, product: updatedProduct || updateResult.data, message: 'تم تحديث المنتج بنجاح' }, { status: 200 });
+    const finalProd = updatedProduct || updateResult.data;
+    const prodName = finalProd?.name || name || `صنف #${id}`;
+
+    if (is_paused !== undefined) {
+      await logAction({
+        actionType: is_paused ? 'إيقاف مؤقت لصنف' : 'استئناف طلب صنف',
+        category: 'عام وعمليات أخرى',
+        details: `تم ${is_paused ? 'إيقاف الطلب مؤقتاً على' : 'استئناف وتفعيل الطلب على'} الصنف (${prodName})`
+      });
+    } else {
+      await logAction({
+        actionType: 'تعديل صنف',
+        category: 'عام وعمليات أخرى',
+        details: `تم تحديث بيانات الصنف (${prodName})${base_price !== undefined ? ` — السعر: ${base_price} ج.م` : ''}${stock_quantity !== undefined ? ` — المخزون: ${stock_quantity}` : ''}`
+      });
+    }
+
+    return NextResponse.json({ data: finalProd, product: finalProd, message: 'تم تحديث المنتج بنجاح' }, { status: 200 });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
@@ -151,6 +169,8 @@ export async function DELETE(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
     }
 
+    const { data: existingProd } = await supabase.from('products').select('name').eq('id', id).maybeSingle();
+
     const { error } = await supabase
       .from('products')
       .update({ is_active: false })
@@ -159,6 +179,12 @@ export async function DELETE(
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 400 });
     }
+
+    await logAction({
+      actionType: 'حذف صنف',
+      category: 'عام وعمليات أخرى',
+      details: `تم حذف/تعطيل الصنف (${existingProd?.name || id}) من المتجر`
+    });
 
     return NextResponse.json({ message: 'Product deleted successfully' }, { status: 200 });
   } catch (err: any) {

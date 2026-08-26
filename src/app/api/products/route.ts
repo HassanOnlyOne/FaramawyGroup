@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { logAction } from '@/lib/audit';
 
 async function getAuthUser(supabase: any) {
   const { data: { user }, error } = await supabase.auth.getUser();
@@ -135,6 +136,12 @@ export async function POST(req: NextRequest) {
       .select('*, pricing_tiers(*)')
       .eq('id', product.id)
       .single();
+
+    await logAction({
+      actionType: 'إضافة صنف جديد',
+      category: 'عام وعمليات أخرى',
+      details: `تمت إضافة الصنف الجديد (${product.name}) بسعر ${product.base_price} ج.م ومخزون ${product.stock_quantity} ${product.wholesale_unit || 'عبوة'}`
+    });
 
     return NextResponse.json({ 
       success: true, 
