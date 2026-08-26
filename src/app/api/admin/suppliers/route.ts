@@ -64,11 +64,20 @@ export async function GET(req: NextRequest) {
       // Fetch all payments made to this supplier
       let paymentsData: any[] = [];
       try {
-        const { data: pays } = await adminClient
+        let { data: pays, error: pErr } = await adminClient
           .from('supplier_payments')
           .select('*')
           .eq('supplier_id', supplierId)
-          .order('payment_date', { ascending: false });
+          .order('created_at', { ascending: false });
+
+        if (pErr || !pays) {
+          const fb = await supabase
+            .from('supplier_payments')
+            .select('*')
+            .eq('supplier_id', supplierId)
+            .order('created_at', { ascending: false });
+          pays = fb.data;
+        }
         paymentsData = pays || [];
       } catch {}
 
@@ -254,17 +263,25 @@ export async function PUT(req: NextRequest) {
       updates.current_balance = newBalance;
 
       // 1. Insert into supplier_payments table
-      const supPaymentRecord = {
+      const supPaymentRecord: any = {
         id: crypto.randomUUID(),
         supplier_id: id,
         amount: recordedPaymentAmount,
+        payment_method: 'كاش نقدي',
         notes: notes || `سداد نقدي لحساب المورد ${supplierTitle}`,
+        created_by: callerUser?.id || null,
         payment_date: new Date().toISOString(),
         created_at: new Date().toISOString()
       };
 
       try {
-        await adminClient.from('supplier_payments').insert([supPaymentRecord]);
+        const { error: payErr } = await adminClient.from('supplier_payments').insert([supPaymentRecord]);
+        if (payErr && (payErr.message?.includes('payment_method') || payErr.message?.includes('created_by'))) {
+          const fallback = { ...supPaymentRecord };
+          delete fallback.payment_method;
+          delete fallback.created_by;
+          await adminClient.from('supplier_payments').insert([fallback]);
+        }
       } catch (errSup) {
         console.warn('supplier_payments insert warning:', errSup);
       }

@@ -137,10 +137,21 @@ export async function POST(req: NextRequest) {
       .eq('id', product.id)
       .single();
 
+    // Resolve caller user
+    const { data: { user: callerUser } } = await supabase.auth.getUser().catch(() => ({ data: { user: null } }));
+    let callerName = '';
+    let callerRole = '';
+    if (callerUser) {
+      const { data: prof } = await adminClient.from('profiles').select('full_name, role').eq('id', callerUser.id).maybeSingle();
+      callerName = prof?.full_name || callerUser.email?.split('@')[0] || '';
+      callerRole = prof?.role || '';
+    }
+
     await logAction({
-      actionType: 'إضافة صنف جديد',
-      category: 'عام وعمليات أخرى',
-      details: `تمت إضافة الصنف الجديد (${product.name}) بسعر ${product.base_price} ج.م ومخزون ${product.stock_quantity} ${product.wholesale_unit || 'عبوة'}`
+      actionType: 'إضافة صنف',
+      category: 'المبيعات والفواتير',
+      details: `قام ${callerName || 'المشرف'} بإضافة صنف جديد: "${product.name}" بسعر ${product.base_price} ج.م ومخزون أولي ${product.stock_quantity} قطعة/كرتونة.`,
+      user: { id: callerUser?.id, name: callerName, role: callerRole }
     });
 
     return NextResponse.json({ 

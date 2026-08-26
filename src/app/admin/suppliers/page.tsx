@@ -182,22 +182,27 @@ export default function SuppliersPage() {
 
     setFormLoading(true);
     try {
-      const res = await fetch('/api/admin/suppliers', {
-        method: 'PUT',
+      const res = await fetch('/api/admin/suppliers/pay', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          id: paymentSupplier.id,
+          supplier_id: paymentSupplier.id,
           payment_amount: Number(paymentAmount),
+          payment_method: 'كاش نقدي',
           notes: paymentNotes ? `[سداد دفعة للمورد: ${paymentAmount} ج.م] - ${paymentNotes}` : `سداد دفعة نقدية بقيمة ${paymentAmount} ج.م`
         })
       });
 
       if (res.ok) {
         toast({ title: 'تم تسجيل سداد الدفعة وخصمها من رصيد المورد والخزينة بنجاح', type: 'success' });
+        const targetSupplier = paymentSupplier;
         setPaymentSupplier(null);
         setPaymentAmount('');
         setPaymentNotes('');
         await fetchSuppliers();
+        if (statementSupplier && statementSupplier.id === targetSupplier.id) {
+          handleOpenStatement(targetSupplier);
+        }
       } else {
         toast({ title: 'خطأ في تسجيل الدفعة', type: 'error' });
       }
@@ -628,17 +633,29 @@ export default function SuppliersPage() {
                           ) : (
                             statementPayments.map(pay => (
                               <tr key={pay.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                                <td className="p-3 font-mono text-slate-500 whitespace-nowrap">
-                                  {new Date(pay.payment_date || pay.created_at).toLocaleDateString('ar-EG')}
+                                <td className="p-3 font-mono whitespace-nowrap text-slate-700 dark:text-slate-300">
+                                  <span className="font-bold block">
+                                    {new Date(pay.created_at || pay.payment_date).toLocaleDateString('ar-EG', { year: 'numeric', month: 'short', day: 'numeric' })}
+                                  </span>
+                                  <span className="text-[10px] text-slate-400 font-mono block">
+                                    {new Date(pay.created_at || pay.payment_date).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}
+                                  </span>
                                 </td>
                                 <td className="p-3 font-mono font-bold text-slate-900 dark:text-white">
-                                  {String(pay.id).slice(0, 10)}
+                                  <span className="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded text-[11px] border border-slate-200 dark:border-slate-700">
+                                    {String(pay.id).slice(0, 10)}
+                                  </span>
                                 </td>
-                                <td className="p-3 font-mono font-bold text-emerald-600 text-sm">
+                                <td className="p-3 font-mono font-black text-emerald-600 dark:text-emerald-400 text-sm whitespace-nowrap">
                                   {formatPriceShort(Number(pay.amount || 0))}
                                 </td>
                                 <td className="p-3 text-slate-600 dark:text-slate-300">
-                                  {pay.notes || 'سداد نقدي لحساب المورد'}
+                                  <span>{pay.notes || 'سداد نقدي لحساب المورد'}</span>
+                                  {pay.payment_method && (
+                                    <span className="mr-2 px-1.5 py-0.5 bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 text-[10px] rounded border border-emerald-200 dark:border-emerald-800">
+                                      {pay.payment_method}
+                                    </span>
+                                  )}
                                 </td>
                               </tr>
                             ))

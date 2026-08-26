@@ -27,12 +27,18 @@ CREATE TABLE IF NOT EXISTS supplier_payments (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   supplier_id UUID REFERENCES suppliers(id) ON DELETE CASCADE,
   amount NUMERIC(12,2) NOT NULL,
+  payment_method TEXT DEFAULT 'كاش نقدي',
   notes TEXT,
   payment_date TIMESTAMPTZ DEFAULT now(),
-  created_at TIMESTAMPTZ DEFAULT now()
+  created_at TIMESTAMPTZ DEFAULT now(),
+  created_by UUID REFERENCES profiles(id)
 );
 
+ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS payment_method TEXT DEFAULT 'كاش نقدي';
+ALTER TABLE supplier_payments ADD COLUMN IF NOT EXISTS created_by UUID REFERENCES profiles(id);
+
 CREATE INDEX IF NOT EXISTS idx_supplier_payments_supplier ON supplier_payments(supplier_id);
+CREATE INDEX IF NOT EXISTS idx_supplier_payments_created_at ON supplier_payments(created_at DESC);
 
 ALTER TABLE supplier_payments ENABLE ROW LEVEL SECURITY;
 

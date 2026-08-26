@@ -136,10 +136,11 @@ async function handleProductUpdate(req: NextRequest, id: string) {
         user: { id: adminUser?.id, name: callerName, role: callerRole }
       });
     } else {
+      const currentStock = finalProd?.stock_quantity ?? stock_quantity ?? '---';
       await logAction({
         actionType: 'تعديل صنف',
-        category: 'عام وعمليات أخرى',
-        details: `قام ${callerName || 'المشرف'} بتعديل بيانات الصنف (${prodName})${base_price !== undefined ? ` — السعر: ${base_price} ج.م` : ''}${stock_quantity !== undefined ? ` — المخزون: ${stock_quantity}` : ''}`,
+        category: 'المبيعات والفواتير',
+        details: `قام ${callerName || 'المشرف'} بتعديل بيانات/مخزون الصنف "${prodName}" (المخزون الحالي: ${currentStock}).`,
         user: { id: adminUser?.id, name: callerName, role: callerRole }
       });
     }

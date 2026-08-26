@@ -87,8 +87,8 @@ export async function POST(req: NextRequest) {
     // Record audit log with exact requested format
     await logAction({
       actionType: 'تعديل رصيد المخزون',
-      category: 'عام وعمليات أخرى',
-      details: `قام ${callerName} بتعديل رصيد مخزون (${product.name}) من ${oldQuantity} إلى ${newQuantity}${reason ? ` (السبب: ${reason})` : ''}`,
+      category: 'المبيعات والفواتير',
+      details: `قام ${callerName} بتعديل بيانات/مخزون الصنف "${product.name}" (المخزون الحالي: ${newQuantity}).`,
       user: {
         id: adminUser.id,
         name: callerName,
