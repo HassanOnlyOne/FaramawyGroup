@@ -223,3 +223,11 @@ export async function PUT(
   const { id } = await context.params;
   return handleOrderUpdate(req, id);
 }
+
+export async function DELETE(
+  req: NextRequest,
+  context: { params: Promise<{ id: string }> }
+) {
+  const { DELETE: adminDelete } = await import('@/app/api/admin/orders/[id]/route');
+  return adminDelete(req, context);
+}

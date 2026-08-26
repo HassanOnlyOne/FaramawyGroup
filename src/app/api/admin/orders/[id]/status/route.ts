@@ -55,50 +55,85 @@ export async function PATCH(
 
     const targetOrderId = order.id;
     const currentStatus = order.status;
+    const isAlreadyDeducted = Boolean(order.stock_deducted);
 
-    // Deduct stock strictly when status becomes 'completed' from non-completed
-    if (status === 'completed' && currentStatus !== 'completed') {
+    let willBeDeducted = isAlreadyDeducted;
+
+    // Deduct stock strictly once when status becomes 'completed' from non-completed and not already deducted
+    if (status === 'completed' && !isAlreadyDeducted) {
       if (Array.isArray(order.order_items)) {
+        // Group quantities by product_id to ensure exact single deduction per product
+        const qtyByProduct = new Map<string, number>();
         for (const item of order.order_items) {
-          const prodId = item.product_id || item.id;
-          const qty = Number(item.quantity || 1);
+          const prodId = item.product_id || item.product?.id || item.id;
+          const qty = Number(item.quantity || 0);
           if (prodId && qty > 0) {
-            const { data: product } = await adminClient.from('products').select('stock_quantity').eq('id', prodId).maybeSingle();
-            if (product) {
-              const currentStock = Number(product.stock_quantity || 0);
-              const newStock = Math.max(0, currentStock - qty);
-              await adminClient.from('products').update({ stock_quantity: newStock, updated_at: new Date().toISOString() }).eq('id', prodId);
-            }
+            qtyByProduct.set(prodId, (qtyByProduct.get(prodId) || 0) + qty);
+          }
+        }
+
+        for (const [prodId, totalQty] of qtyByProduct.entries()) {
+          const { data: product } = await adminClient.from('products').select('stock_quantity').eq('id', prodId).maybeSingle();
+          if (product) {
+            const currentStock = Number(product.stock_quantity || 0);
+            const newStock = Math.max(0, currentStock - totalQty);
+            await adminClient.from('products').update({ stock_quantity: newStock, updated_at: new Date().toISOString() }).eq('id', prodId);
           }
         }
       }
+      willBeDeducted = true;
     }
 
-    // Restore stock if status moves to 'returned' or 'cancelled' from 'completed'
-    if (['cancelled', 'returned'].includes(status) && currentStatus === 'completed') {
+    // Restore stock if status moves to 'returned' or 'cancelled' and was previously deducted
+    if (['cancelled', 'returned'].includes(status) && isAlreadyDeducted) {
       if (Array.isArray(order.order_items)) {
+        const qtyByProduct = new Map<string, number>();
         for (const item of order.order_items) {
-          const prodId = item.product_id || item.id;
-          const qty = Number(item.quantity || 1);
+          const prodId = item.product_id || item.product?.id || item.id;
+          const qty = Number(item.quantity || 0);
           if (prodId && qty > 0) {
-            const { data: product } = await adminClient.from('products').select('stock_quantity').eq('id', prodId).maybeSingle();
-            if (product) {
-              const currentStock = Number(product.stock_quantity || 0);
-              const newStock = currentStock + qty;
-              await adminClient.from('products').update({ stock_quantity: newStock, updated_at: new Date().toISOString() }).eq('id', prodId);
-            }
+            qtyByProduct.set(prodId, (qtyByProduct.get(prodId) || 0) + qty);
+          }
+        }
+
+        for (const [prodId, totalQty] of qtyByProduct.entries()) {
+          const { data: product } = await adminClient.from('products').select('stock_quantity').eq('id', prodId).maybeSingle();
+          if (product) {
+            const currentStock = Number(product.stock_quantity || 0);
+            const newStock = currentStock + totalQty;
+            await adminClient.from('products').update({ stock_quantity: newStock, updated_at: new Date().toISOString() }).eq('id', prodId);
           }
         }
       }
+      willBeDeducted = false;
     }
 
-    // Update status in database using exact order.id
+    // Update status and stock_deducted flag in database using exact order.id
+    const orderUpdatePayload: any = { 
+      status, 
+      stock_deducted: willBeDeducted,
+      updated_at: new Date().toISOString() 
+    };
+
     let { data: updatedOrder, error: updateError } = await adminClient
       .from('orders')
-      .update({ status, updated_at: new Date().toISOString() })
+      .update(orderUpdatePayload)
       .eq('id', targetOrderId)
       .select('*, order_items(*, product:products(*)), customer:profiles(*)')
       .maybeSingle();
+
+    // Fallback if stock_deducted column not in table schema
+    if (updateError && updateError.message.includes('stock_deducted')) {
+      delete orderUpdatePayload.stock_deducted;
+      const retry = await adminClient
+        .from('orders')
+        .update(orderUpdatePayload)
+        .eq('id', targetOrderId)
+        .select('*, order_items(*, product:products(*)), customer:profiles(*)')
+        .maybeSingle();
+      updatedOrder = retry.data;
+      updateError = retry.error;
+    }
 
     if (updateError || !updatedOrder) {
       const { data: fbUpdated } = await supabase

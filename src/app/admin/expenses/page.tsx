@@ -51,16 +51,18 @@ export default function ExpensesPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newExpense)
       });
-      if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data.error === undefined) {
         toast({ title: 'تم تسجيل المصروف بنجاح', type: 'success' });
         setShowModal(false);
         setNewExpense({ title: '', category: 'نقل ونولون', amount: '', notes: '' });
         await fetchExpenses();
       } else {
-        toast({ title: 'خطأ في حفظ المصروف', type: 'error' });
+        toast({ title: 'خطأ في حفظ المصروف', description: data.error || 'تعذر تسجيل المصروف', type: 'error' });
       }
-    } catch (err) {
-      toast({ title: 'خطأ في الاتصال', type: 'error' });
+    } catch (err: any) {
+      toast({ title: 'خطأ في الاتصال بالسيرفر', description: err.message, type: 'error' });
     } finally {
       setFormLoading(false);
     }
@@ -77,15 +79,17 @@ export default function ExpensesPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(editExpense)
       });
-      if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data.error === undefined) {
         toast({ title: 'تم تحديث بيانات المصروف بنجاح', type: 'success' });
         setEditExpense(null);
         await fetchExpenses();
       } else {
-        toast({ title: 'خطأ في تعديل المصروف', type: 'error' });
+        toast({ title: 'خطأ في تعديل المصروف', description: data.error || 'فشل تحديث المصروف', type: 'error' });
       }
-    } catch (err) {
-      toast({ title: 'خطأ في الاتصال', type: 'error' });
+    } catch (err: any) {
+      toast({ title: 'خطأ في الاتصال بالسيرفر', description: err.message, type: 'error' });
     } finally {
       setFormLoading(false);
     }

@@ -177,6 +177,13 @@ export default function AdminDashboard() {
       isSuccess: true 
     },
     { 
+      label: 'سدادات اليوم', 
+      value: formatPriceShort(stats?.today_payouts || 0), 
+      icon: <TrendingUp className="text-red-600 dark:text-red-400 rotate-180" />, 
+      bg: 'bg-red-50 dark:bg-red-950/60', 
+      isDanger: true 
+    },
+    { 
       label: 'إجمالي الطلبات', 
       value: formatNumber(stats?.total_orders || 0), 
       icon: <ShoppingCart className="text-blue-600 dark:text-blue-400" />, 

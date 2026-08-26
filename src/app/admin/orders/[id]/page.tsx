@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { ElfarmawyInvoice } from '@/components/admin/invoice';
 import { formatPriceShort, ORDER_STATUS_LABELS } from '@/lib/constants';
@@ -16,9 +16,11 @@ export default function AdminOrderDetail() {
   const { toast } = useToast();
   const { formatPriceShort, formatNumber } = useNumberFormat();
 
+  const router = useRouter();
   const [order, setOrder] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
+  const [deletingOrder, setDeletingOrder] = useState(false);
   const [status, setStatus] = useState<string>('pending');
 
   // Invoice Edit Modal State
@@ -30,6 +32,31 @@ export default function AdminOrderDetail() {
   const [editablePaidAmount, setEditablePaidAmount] = useState(0);
   const [savingInvoice, setSavingInvoice] = useState(false);
   const [selectedProductId, setSelectedProductId] = useState('');
+
+  const handleDeleteThisOrder = async () => {
+    const invNo = order?.invoice_no || order?.order_number || id;
+    const confirmDelete = window.confirm(`هل أنت متأكد من حذف هذا الطلب الملغي #${invNo} نهائياً؟ لا يمكن التراجع عن هذا الإجراء.`);
+    if (!confirmDelete) return;
+
+    setDeletingOrder(true);
+    try {
+      const res = await fetch(`/api/admin/orders/${id}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data.success !== false) {
+        toast({ title: 'تم حذف الطلب الملغي نهائياً', type: 'success' });
+        router.push('/admin/orders');
+      } else {
+        toast({ title: 'فشل حذف الطلب', description: data.error || 'تعذر حذف الطلب', type: 'error' });
+      }
+    } catch (err: any) {
+      toast({ title: 'خطأ في الاتصال', description: err.message, type: 'error' });
+    } finally {
+      setDeletingOrder(false);
+    }
+  };
 
   useEffect(() => {
     fetchOrder();
@@ -99,19 +126,11 @@ export default function AdminOrderDetail() {
     }
     setUpdating(true);
     try {
-      let res = await fetch(`/api/admin/orders/${id}/status`, {
+      const res = await fetch(`/api/admin/orders/${id}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus })
       });
-
-      if (!res.ok) {
-        res = await fetch(`/api/orders/${id}/status`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: newStatus })
-        });
-      }
       
       const data = await res.json().catch(() => ({}));
 
@@ -384,6 +403,17 @@ export default function AdminOrderDetail() {
               <Printer className="w-4 h-4" />
               <span>طباعة الفاتورة</span>
             </button>
+
+            {['cancelled', 'ملغي', 'ملغى'].includes(String(status || '').toLowerCase()) && (
+              <button 
+                onClick={handleDeleteThisOrder}
+                disabled={deletingOrder}
+                className="bg-red-50 hover:bg-red-100 dark:bg-red-950/60 dark:hover:bg-red-900/60 text-red-700 dark:text-red-300 border border-red-300 dark:border-red-800 flex items-center gap-2 font-bold px-4 py-2.5 text-sm rounded-xl transition-colors disabled:opacity-50"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>{deletingOrder ? 'جاري حذف الطلب...' : 'حذف الطلب نهائياً'}</span>
+              </button>
+            )}
           </div>
         </div>
 

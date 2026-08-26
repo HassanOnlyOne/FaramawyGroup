@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { logActivity } from '@/lib/auditLogger';
+import { logAction, logActivity } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -239,4 +239,68 @@ export async function PUT(
 ) {
   const { id } = await context.params;
   return handleOrderUpdate(req, id);
+}
+
+export async function DELETE(
+  req: NextRequest,
+  context: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await context.params;
+    const adminClient = createAdminClient();
+    const supabase = await createClient();
+
+    // Query order
+    let query = adminClient.from('orders').select('*, customer:profiles(*)');
+    if (id.startsWith('INV-')) query = query.eq('invoice_no', id);
+    else if (id.startsWith('ORD-')) query = query.eq('order_number', id);
+    else query = query.or(`id.eq.${id},order_number.eq.${id},invoice_no.eq.${id}`);
+
+    let { data: orderList } = await query;
+    let order = orderList && orderList[0];
+
+    if (!order) {
+      const fbRes = await supabase.from('orders').select('*, customer:profiles(*)').eq('id', id).maybeSingle();
+      order = fbRes.data;
+    }
+
+    if (!order) {
+      return NextResponse.json({ success: false, error: 'الطلب غير موجود' }, { status: 404 });
+    }
+
+    // Check if order is cancelled
+    const isCancelled = ['cancelled', 'ملغي', 'ملغى'].includes(String(order.status || '').toLowerCase());
+    if (!isCancelled) {
+      return NextResponse.json({ 
+        success: false, 
+        error: 'لا يمكن حذف هذا الطلب لأنه ليس في حالة ملغي. يرجى إلغاء الطلب أولاً قبل حذفه نهائياً.' 
+      }, { status: 400 });
+    }
+
+    const targetOrderId = order.id;
+
+    // Delete order_items first
+    await adminClient.from('order_items').delete().eq('order_id', targetOrderId);
+
+    // Delete order
+    const { error: delError } = await adminClient.from('orders').delete().eq('id', targetOrderId);
+    if (delError) {
+      await supabase.from('orders').delete().eq('id', targetOrderId);
+    }
+
+    await logAction({
+      actionType: 'حذف طلب ملغي',
+      category: 'المبيعات والفواتير',
+      details: `تم حذف الطلب الملغي #${order.invoice_no || order.order_number || targetOrderId} نهائياً من قاعدة البيانات`
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: 'تم حذف الطلب الملغي نهائياً بنجاح'
+    }, { status: 200 });
+
+  } catch (err: any) {
+    console.error('Delete Order Error:', err);
+    return NextResponse.json({ success: false, error: err.message }, { status: 500 });
+  }
 }

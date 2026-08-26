@@ -4,8 +4,9 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { OrderStatus } from '@/lib/types';
-import { Search, Eye, Filter } from 'lucide-react';
+import { Search, Eye, Filter, Trash2 } from 'lucide-react';
 import { useNumberFormat } from '@/context/number-format-context';
+import { useToast } from '@/components/ui/toast';
 
 const STATUS_CONFIG: Record<string, { label: string; bg: string; text: string }> = {
   pending: { label: 'قيد الانتظار', bg: 'bg-amber-100 dark:bg-amber-950/60', text: 'text-amber-800 dark:text-amber-300' },
@@ -19,9 +20,11 @@ const STATUS_CONFIG: Record<string, { label: string; bg: string; text: string }>
 };
 
 export default function AdminOrdersPage() {
+  const { toast } = useToast();
   const { formatPriceShort, formatNumber } = useNumberFormat();
   const [orders, setOrders] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -36,6 +39,30 @@ export default function AdminOrdersPage() {
       setOrders([]);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleDeleteOrder = async (orderId: string, invoiceDisplay: string) => {
+    const confirmDelete = window.confirm(`هل أنت متأكد من حذف الطلب الملغي #${invoiceDisplay} نهائياً من قاعدة البيانات؟ لا يمكن التراجع عن هذا الإجراء.`);
+    if (!confirmDelete) return;
+
+    setDeletingId(orderId);
+    try {
+      const res = await fetch(`/api/admin/orders/${orderId}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data.success !== false) {
+        toast({ title: 'تم حذف الطلب الملغي نهائياً', type: 'success' });
+        setOrders(prev => prev.filter(o => o.id !== orderId));
+      } else {
+        toast({ title: 'فشل حذف الطلب', description: data.error || 'تعذر حذف الطلب', type: 'error' });
+      }
+    } catch (err: any) {
+      toast({ title: 'خطأ في الاتصال بالسيرفر', description: err.message, type: 'error' });
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -173,10 +200,24 @@ export default function AdminOrdersPage() {
                         })()}
                       </td>
                       <td className="px-5 py-4 text-center">
-                        <Link href={`/admin/orders/${order.id}`} className="inline-flex items-center gap-1 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:border-brand-500 dark:hover:border-emerald-500 hover:text-brand-700 dark:hover:text-emerald-300 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors shadow-sm text-slate-800 dark:text-slate-200">
-                          <Eye className="w-3.5 h-3.5 text-brand-600 dark:text-emerald-400" />
-                          <span>عرض وتعديل</span>
-                        </Link>
+                        <div className="flex items-center justify-center gap-2">
+                          <Link href={`/admin/orders/${order.id}`} className="inline-flex items-center gap-1 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 hover:border-brand-500 dark:hover:border-emerald-500 hover:text-brand-700 dark:hover:text-emerald-300 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors shadow-sm text-slate-800 dark:text-slate-200">
+                            <Eye className="w-3.5 h-3.5 text-brand-600 dark:text-emerald-400" />
+                            <span>عرض وتعديل</span>
+                          </Link>
+
+                          {['cancelled', 'ملغي', 'ملغى'].includes(String(order.status || '').toLowerCase()) && (
+                            <button
+                              onClick={() => handleDeleteOrder(order.id, invClean)}
+                              disabled={deletingId === order.id}
+                              className="inline-flex items-center gap-1 bg-red-50 hover:bg-red-100 dark:bg-red-950/60 dark:hover:bg-red-900/60 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800 px-2.5 py-1.5 rounded-xl text-xs font-bold transition-colors shadow-sm disabled:opacity-50"
+                              title="حذف الطلب نهائياً"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>{deletingId === order.id ? 'جاري الحذف...' : 'حذف'}</span>
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );

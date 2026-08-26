@@ -29,26 +29,39 @@ export async function POST(req: NextRequest) {
     const supabase = await createClient();
 
     const body = await req.json();
-    const { title, category, amount, notes } = body;
+    const { title, category, amount, notes, created_by } = body;
 
-    const payload = {
+    const { data: { user } } = await supabase.auth.getUser().catch(() => ({ data: { user: null } }));
+    const userCreatedBy = created_by || user?.id || null;
+
+    const fullPayload: any = {
       id: crypto.randomUUID(),
-      title: title || 'مصروف عام',
+      title: (title || 'مصروف عام').trim(),
       category: category || 'تشغيلي',
       amount: Number(amount || 0),
-      notes: notes || null,
+      notes: notes ? String(notes).trim() : null,
+      created_by: userCreatedBy,
       created_at: new Date().toISOString()
     };
 
-    let { data, error } = await adminClient.from('expenses').insert(payload).select().maybeSingle();
+    let { data, error } = await adminClient.from('expenses').insert(fullPayload).select().maybeSingle();
+    
+    // If error might be due to created_by column not existing, retry without it
+    if (error && error.message?.includes('created_by')) {
+      delete fullPayload.created_by;
+      const retry = await adminClient.from('expenses').insert(fullPayload).select().maybeSingle();
+      data = retry.data;
+      error = retry.error;
+    }
+
     if (error || !data) {
-      const fb = await supabase.from('expenses').insert(payload).select().maybeSingle();
+      const fb = await supabase.from('expenses').insert(fullPayload).select().maybeSingle();
       data = fb.data;
       error = fb.error;
     }
 
     if (error && !data) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
+      return NextResponse.json({ error: error.message || 'فشل حفظ المصروف' }, { status: 400 });
     }
 
     // Log the expense in audit_logs
@@ -58,9 +71,10 @@ export async function POST(req: NextRequest) {
       details: `تسجيل مصروف (${title || 'مصروف'}) بقيمة ${amount} ج.م - تصنيف: ${category || 'تشغيلي'}`
     });
 
-    return NextResponse.json({ data, message: 'تم تسجيل المصروف بنجاح' }, { status: 201 });
+    return NextResponse.json({ success: true, data, message: 'تم تسجيل المصروف بنجاح' }, { status: 201 });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    console.error('Expense POST error:', err);
+    return NextResponse.json({ error: err.message || 'حدث خطأ في الخادم' }, { status: 500 });
   }
 }
 

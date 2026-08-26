@@ -150,6 +150,27 @@ export async function GET() {
       return stock <= threshold && p.is_active !== false;
     }).length;
 
+    let { data: expenses } = await adminClient.from('expenses').select('*');
+    if (!expenses) {
+      const fb = await supabase.from('expenses').select('*');
+      expenses = fb.data || [];
+    }
+
+    const safeExpenses = Array.isArray(expenses) ? expenses : [];
+
+    // Calculate today's payouts (expenses + supplier cash payments)
+    const todayExpenses = safeExpenses.filter((e: any) => {
+      const d = new Date(e.created_at || e.date);
+      return isSameDay(d, now);
+    }).reduce((sum: number, e: any) => sum + Number(e.amount || 0), 0);
+
+    const todaySupplierCashPaid = safePurchases.filter((p: any) => {
+      const d = new Date(p.created_at);
+      return isSameDay(d, now) && Number(p.paid_amount || 0) > 0;
+    }).reduce((sum: number, p: any) => sum + Number(p.paid_amount || 0), 0);
+
+    const todayPayouts = todayExpenses + todaySupplierCashPaid;
+
     const statsObj = {
       total_orders: totalOrdersCount,
       pending_orders: pendingOrdersCount,
@@ -160,6 +181,9 @@ export async function GET() {
       total_supplier_payables: totalSupplierPayables,
       credit_customers: creditCustomersCount,
       today_collections: todayCollections,
+      today_expenses: todayExpenses,
+      today_supplier_payments: todaySupplierCashPaid,
+      today_payouts: todayPayouts,
       recent_orders: safeOrders.slice(0, 10),
     };
 
