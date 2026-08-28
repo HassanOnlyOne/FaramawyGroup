@@ -129,10 +129,12 @@ export async function POST(req: NextRequest) {
     }
 
     // 6. Update supplier balance
-    await adminClient
-      .from('suppliers')
-      .update({ balance: newBalance, current_balance: newBalance, updated_at: new Date().toISOString() })
-      .eq('id', supplierId);
+    const supUpdates: any = { balance: newBalance, current_balance: newBalance, updated_at: new Date().toISOString() };
+    const { error: upErr } = await adminClient.from('suppliers').update(supUpdates).eq('id', supplierId);
+    if (upErr && (upErr.message?.includes('current_balance') || upErr.message?.includes('updated_at'))) {
+      const fallbackUpdates: any = { balance: newBalance };
+      await adminClient.from('suppliers').update(fallbackUpdates).eq('id', supplierId);
+    }
 
     // 7. Log in audit_logs
     await logAction({

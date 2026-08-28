@@ -32,11 +32,16 @@ export async function GET(req: NextRequest) {
         return sum + rem;
       }, 0);
 
-      const finalDebt = Math.max(purchasesDebt, Number(sup.balance || 0));
+      const finalDebt = Math.max(purchasesDebt, Number(sup.current_balance ?? sup.balance ?? 0));
 
       return {
         ...sup,
+        company: sup.company || sup.company_name || '',
+        company_name: sup.company_name || sup.company || '',
         balance: finalDebt,
+        current_balance: finalDebt,
+        opening_balance: Number(sup.opening_balance ?? sup.initial_balance ?? finalDebt),
+        initial_balance: Number(sup.initial_balance ?? sup.opening_balance ?? finalDebt),
         current_debt: finalDebt,
         purchases_count: supPurchases.length
       };
@@ -54,34 +59,120 @@ export async function POST(req: NextRequest) {
     const supabase = await createClient();
 
     const body = await req.json();
-    const { name, company_name, phone, initial_balance, balance, notes } = body;
+    const { 
+      name, 
+      company, 
+      company_name, 
+      phone, 
+      initial_balance, 
+      balance, 
+      current_balance, 
+      opening_balance, 
+      notes 
+    } = body;
 
-    const supplierName = (name || company_name || 'مورد عام').trim();
-    const supplierCompany = (company_name || name || '').trim();
-    const numBalance = Number(initial_balance ?? balance ?? 0);
+    const supplierName = (name || company_name || company || 'مورد عام').trim();
+    const supplierCompany = (company || company_name || name || '').trim();
+    const numBalance = Number(balance ?? current_balance ?? opening_balance ?? initial_balance ?? 0);
 
-    const payload: any = {
+    const basePayload: any = {
+      id: crypto.randomUUID(),
       name: supplierName,
+      company: supplierCompany,
       company_name: supplierCompany,
       phone: phone?.trim() || null,
       balance: numBalance,
+      current_balance: numBalance,
+      opening_balance: numBalance,
+      initial_balance: numBalance,
       notes: notes?.trim() || null,
       created_at: new Date().toISOString()
     };
 
-    let { data, error } = await adminClient.from('suppliers').insert([payload]).select().maybeSingle();
-    
+    let payload = { ...basePayload };
+    let data: any = null;
+    let error: any = null;
+
+    for (let i = 0; i < 7; i++) {
+      const res = await adminClient.from('suppliers').insert([payload]).select().maybeSingle();
+      if (!res.error && res.data) {
+        data = res.data;
+        error = null;
+        break;
+      }
+      error = res.error;
+      const errMsg = error?.message || '';
+
+      const match = errMsg.match(/column "([^"]+)" of relation "suppliers" does not exist/i)
+                 || errMsg.match(/Could not find the '([^']+)' column/i);
+      if (match && match[1] && match[1] in payload) {
+        delete payload[match[1]];
+        continue;
+      }
+
+      if (errMsg.includes('opening_balance') && 'opening_balance' in payload) {
+        delete payload.opening_balance;
+        continue;
+      }
+      if (errMsg.includes('initial_balance') && 'initial_balance' in payload) {
+        delete payload.initial_balance;
+        continue;
+      }
+      if (errMsg.includes('current_balance') && 'current_balance' in payload) {
+        delete payload.current_balance;
+        continue;
+      }
+      if (errMsg.includes('company_name') && 'company_name' in payload) {
+        delete payload.company_name;
+        continue;
+      }
+      if (errMsg.includes('company') && 'company' in payload) {
+        delete payload.company;
+        continue;
+      }
+      if (errMsg.includes('id') && 'id' in payload) {
+        delete payload.id;
+        continue;
+      }
+      break;
+    }
+
     if (error || !data) {
-      const fb = await supabase.from('suppliers').insert([payload]).select().maybeSingle();
-      data = fb.data;
-      error = fb.error;
+      let fbPayload = { ...payload };
+      for (let i = 0; i < 7; i++) {
+        const fb = await supabase.from('suppliers').insert([fbPayload]).select().maybeSingle();
+        if (!fb.error && fb.data) {
+          data = fb.data;
+          error = null;
+          break;
+        }
+        error = fb.error;
+        const errMsg = error?.message || '';
+        const match = errMsg.match(/column "([^"]+)" of relation "suppliers" does not exist/i)
+                   || errMsg.match(/Could not find the '([^']+)' column/i);
+        if (match && match[1] && match[1] in fbPayload) {
+          delete fbPayload[match[1]];
+          continue;
+        }
+        break;
+      }
     }
 
     if (error && !data) {
       return NextResponse.json({ success: false, error: error.message }, { status: 400 });
     }
 
-    return NextResponse.json({ success: true, data, supplier: data, message: 'تم حفظ المورد بنجاح' }, { status: 201 });
+    const normalizedData = {
+      ...data,
+      company: data?.company || data?.company_name || supplierCompany,
+      company_name: data?.company_name || data?.company || supplierCompany,
+      balance: numBalance,
+      current_balance: numBalance,
+      opening_balance: numBalance,
+      initial_balance: numBalance
+    };
+
+    return NextResponse.json({ success: true, data: normalizedData, supplier: normalizedData, message: 'تم حفظ المورد بنجاح' }, { status: 201 });
   } catch (err: any) {
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });
   }

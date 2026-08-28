@@ -46,8 +46,12 @@ export default function SuppliersPage() {
 
   const [newSupplier, setNewSupplier] = useState({
     name: '',
+    company: '',
     company_name: '',
     phone: '',
+    balance: '0',
+    current_balance: '0',
+    opening_balance: '0',
     initial_balance: '0',
     notes: ''
   });
@@ -96,17 +100,34 @@ export default function SuppliersPage() {
 
   const handleCreateSupplier = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newSupplier.name.trim() && !newSupplier.company_name.trim()) {
+    const sName = (newSupplier.name || '').trim();
+    const sCompany = (newSupplier.company || newSupplier.company_name || '').trim();
+
+    if (!sName && !sCompany) {
       toast({ title: 'تنبيه', description: 'يرجى إدخال اسم المورد أو اسم الشركة', type: 'error' });
       return;
     }
+
+    const bal = Number(newSupplier.balance || newSupplier.current_balance || newSupplier.opening_balance || newSupplier.initial_balance || 0);
+
+    const supplierData = {
+      name: sName || sCompany,
+      company: sCompany,
+      company_name: sCompany,
+      phone: newSupplier.phone ? newSupplier.phone.trim() : '',
+      balance: bal,
+      current_balance: bal,
+      opening_balance: bal,
+      initial_balance: bal,
+      notes: newSupplier.notes ? newSupplier.notes.trim() : ''
+    };
 
     setFormLoading(true);
     try {
       const res = await fetch('/api/admin/suppliers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newSupplier)
+        body: JSON.stringify(supplierData)
       });
       
       const data = await res.json().catch(() => ({}));
@@ -114,7 +135,17 @@ export default function SuppliersPage() {
       if (res.ok && data.success !== false) {
         toast({ title: 'تم تسجيل المورد بنجاح', type: 'success' });
         setShowAddModal(false);
-        setNewSupplier({ name: '', company_name: '', phone: '', initial_balance: '0', notes: '' });
+        setNewSupplier({
+          name: '',
+          company: '',
+          company_name: '',
+          phone: '',
+          balance: '0',
+          current_balance: '0',
+          opening_balance: '0',
+          initial_balance: '0',
+          notes: ''
+        });
         await fetchSuppliers();
       } else {
         toast({ title: 'خطأ في حفظ المورد', description: data.error || 'فشل تسجيل المورد في النظام', type: 'error' });
@@ -130,12 +161,29 @@ export default function SuppliersPage() {
     e.preventDefault();
     if (!editSupplier) return;
 
+    const sName = (editSupplier.name || '').trim();
+    const sCompany = (editSupplier.company || editSupplier.company_name || '').trim();
+    const bal = Number(editSupplier.balance ?? editSupplier.current_balance ?? editSupplier.opening_balance ?? editSupplier.initial_balance ?? 0);
+
+    const updateData = {
+      ...editSupplier,
+      name: sName || sCompany,
+      company: sCompany,
+      company_name: sCompany,
+      phone: editSupplier.phone ? editSupplier.phone.trim() : '',
+      balance: bal,
+      current_balance: bal,
+      opening_balance: bal,
+      initial_balance: bal,
+      notes: editSupplier.notes ? editSupplier.notes.trim() : ''
+    };
+
     setFormLoading(true);
     try {
       const res = await fetch('/api/admin/suppliers', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editSupplier)
+        body: JSON.stringify(updateData)
       });
 
       const data = await res.json().catch(() => ({}));
@@ -710,8 +758,8 @@ export default function SuppliersPage() {
                 <input
                   type="text"
                   placeholder="مثال: مصنع الأهرام للزيوت / شركة الفيروز"
-                  value={newSupplier.company_name}
-                  onChange={e => setNewSupplier({ ...newSupplier, company_name: e.target.value })}
+                  value={newSupplier.company_name || newSupplier.company}
+                  onChange={e => setNewSupplier({ ...newSupplier, company: e.target.value, company_name: e.target.value })}
                   className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-xl text-xs font-bold focus:outline-none focus:border-emerald-500"
                 />
               </div>
@@ -733,8 +781,14 @@ export default function SuppliersPage() {
                 <input
                   type="number"
                   placeholder="0"
-                  value={newSupplier.initial_balance}
-                  onChange={e => setNewSupplier({ ...newSupplier, initial_balance: e.target.value })}
+                  value={newSupplier.balance}
+                  onChange={e => setNewSupplier({ 
+                    ...newSupplier, 
+                    balance: e.target.value, 
+                    current_balance: e.target.value, 
+                    opening_balance: e.target.value, 
+                    initial_balance: e.target.value 
+                  })}
                   className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-xl text-xs font-bold font-mono focus:outline-none focus:border-emerald-500"
                 />
               </div>
@@ -795,8 +849,8 @@ export default function SuppliersPage() {
                 <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">اسم الشركة / المصنع</label>
                 <input
                   type="text"
-                  value={editSupplier.company_name || ''}
-                  onChange={e => setEditSupplier({ ...editSupplier, company_name: e.target.value })}
+                  value={editSupplier.company_name || editSupplier.company || ''}
+                  onChange={e => setEditSupplier({ ...editSupplier, company: e.target.value, company_name: e.target.value })}
                   className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-xl text-xs font-bold"
                 />
               </div>
@@ -816,8 +870,17 @@ export default function SuppliersPage() {
                 <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">الرصيد المستحق الحالي (ج.م)</label>
                 <input
                   type="number"
-                  value={editSupplier.balance ?? editSupplier.current_balance ?? 0}
-                  onChange={e => setEditSupplier({ ...editSupplier, balance: parseFloat(e.target.value) || 0, current_balance: parseFloat(e.target.value) || 0 })}
+                  value={editSupplier.balance ?? editSupplier.current_balance ?? editSupplier.opening_balance ?? 0}
+                  onChange={e => {
+                    const val = parseFloat(e.target.value) || 0;
+                    setEditSupplier({ 
+                      ...editSupplier, 
+                      balance: val, 
+                      current_balance: val, 
+                      opening_balance: val, 
+                      initial_balance: val 
+                    });
+                  }}
                   className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-xl text-xs font-bold font-mono"
                 />
               </div>

@@ -58,7 +58,7 @@ export async function GET(req: NextRequest) {
       const { data: purchasesData } = await adminClient
         .from('purchases')
         .select('*')
-        .or(`supplier_id.eq.${supplierId},supplier_name.ilike.%${supplier.name || supplier.company_name}%`)
+        .or(`supplier_id.eq.${supplierId},supplier_name.ilike.%${supplier.name || supplier.company_name || supplier.company}%`)
         .order('created_at', { ascending: false });
 
       // Fetch all payments made to this supplier
@@ -85,13 +85,19 @@ export async function GET(req: NextRequest) {
       const payments = paymentsData || [];
       const currentBalance = Number(supplier.current_balance !== undefined && supplier.current_balance !== null ? supplier.current_balance : (supplier.balance || 0));
 
+      const normalizedSupplier = {
+        ...supplier,
+        company: supplier.company || supplier.company_name || '',
+        company_name: supplier.company_name || supplier.company || '',
+        balance: currentBalance,
+        current_balance: currentBalance,
+        opening_balance: Number(supplier.opening_balance ?? supplier.initial_balance ?? currentBalance),
+        initial_balance: Number(supplier.initial_balance ?? supplier.opening_balance ?? currentBalance)
+      };
+
       return NextResponse.json({
         success: true,
-        supplier: {
-          ...supplier,
-          balance: currentBalance,
-          current_balance: currentBalance
-        },
+        supplier: normalizedSupplier,
         purchases,
         payments
       });
@@ -115,6 +121,7 @@ export async function GET(req: NextRequest) {
         if (p.supplier_id && p.supplier_id === sup.id) return true;
         if (sup.name && p.supplier_name && String(p.supplier_name).toLowerCase().includes(String(sup.name).toLowerCase())) return true;
         if (sup.company_name && p.supplier_name && String(p.supplier_name).toLowerCase().includes(String(sup.company_name).toLowerCase())) return true;
+        if (sup.company && p.supplier_name && String(p.supplier_name).toLowerCase().includes(String(sup.company).toLowerCase())) return true;
         return false;
       });
 
@@ -122,8 +129,12 @@ export async function GET(req: NextRequest) {
 
       return {
         ...sup,
+        company: sup.company || sup.company_name || '',
+        company_name: sup.company_name || sup.company || '',
         balance: actualBalance,
         current_balance: actualBalance,
+        opening_balance: Number(sup.opening_balance ?? sup.initial_balance ?? actualBalance),
+        initial_balance: Number(sup.initial_balance ?? sup.opening_balance ?? actualBalance),
         current_debt: actualBalance,
         purchases_count: supPurchases.length
       };
@@ -151,45 +162,124 @@ export async function POST(req: NextRequest) {
     const supabase = await createClient();
 
     const body = await req.json();
-    const { name, company_name, phone, initial_balance, balance, notes } = body;
+    const { 
+      name, 
+      company, 
+      company_name, 
+      phone, 
+      balance, 
+      current_balance, 
+      opening_balance, 
+      initial_balance, 
+      notes 
+    } = body;
 
-    const supplierName = (name || company_name || 'مورد عام').trim();
-    const supplierCompany = (company_name || name || '').trim();
-    const numBalance = Number(balance || initial_balance || 0);
+    const supplierName = (name || company_name || company || 'مورد عام').trim();
+    const supplierCompany = (company || company_name || name || '').trim();
+    const numBalance = Number(balance ?? current_balance ?? opening_balance ?? initial_balance ?? 0);
 
-    const payload: any = {
+    const basePayload: Record<string, any> = {
       id: crypto.randomUUID(),
       name: supplierName,
+      company: supplierCompany,
       company_name: supplierCompany,
-      phone: phone ? phone.trim() : null,
+      phone: phone ? String(phone).trim() : null,
       balance: numBalance,
       current_balance: numBalance,
+      opening_balance: numBalance,
       initial_balance: numBalance,
-      notes: notes ? notes.trim() : null,
+      notes: notes ? String(notes).trim() : null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
 
-    let { data, error } = await adminClient.from('suppliers').insert([payload]).select().maybeSingle();
+    let payload = { ...basePayload };
+    let data: any = null;
+    let error: any = null;
 
-    if (error && (error.message?.includes('initial_balance') || error.message?.includes('current_balance'))) {
-      const fallback = { ...payload };
-      delete fallback.initial_balance;
-      delete fallback.current_balance;
-      const retry = await adminClient.from('suppliers').insert([fallback]).select().maybeSingle();
-      data = retry.data;
-      error = retry.error;
+    // Resilient insert loop: strips any column that doesn't exist in DB schema and retries
+    for (let i = 0; i < 7; i++) {
+      const res = await adminClient.from('suppliers').insert([payload]).select().maybeSingle();
+      if (!res.error && res.data) {
+        data = res.data;
+        error = null;
+        break;
+      }
+      error = res.error;
+      const errMsg = error?.message || '';
+
+      const match = errMsg.match(/column "([^"]+)" of relation "suppliers" does not exist/i)
+                 || errMsg.match(/Could not find the '([^']+)' column/i);
+      if (match && match[1] && match[1] in payload) {
+        delete payload[match[1]];
+        continue;
+      }
+
+      if (errMsg.includes('opening_balance') && 'opening_balance' in payload) {
+        delete payload.opening_balance;
+        continue;
+      }
+      if (errMsg.includes('initial_balance') && 'initial_balance' in payload) {
+        delete payload.initial_balance;
+        continue;
+      }
+      if (errMsg.includes('current_balance') && 'current_balance' in payload) {
+        delete payload.current_balance;
+        continue;
+      }
+      if (errMsg.includes('company_name') && 'company_name' in payload) {
+        delete payload.company_name;
+        continue;
+      }
+      if (errMsg.includes('company') && 'company' in payload) {
+        delete payload.company;
+        continue;
+      }
+      if (errMsg.includes('updated_at') && 'updated_at' in payload) {
+        delete payload.updated_at;
+        continue;
+      }
+      if (errMsg.includes('id') && 'id' in payload) {
+        delete payload.id;
+        continue;
+      }
+      break;
     }
 
     if (error || !data) {
-      const fb = await supabase.from('suppliers').insert([payload]).select().maybeSingle();
-      data = fb.data;
-      error = fb.error;
+      let fbPayload = { ...payload };
+      for (let i = 0; i < 7; i++) {
+        const fb = await supabase.from('suppliers').insert([fbPayload]).select().maybeSingle();
+        if (!fb.error && fb.data) {
+          data = fb.data;
+          error = null;
+          break;
+        }
+        error = fb.error;
+        const errMsg = error?.message || '';
+        const match = errMsg.match(/column "([^"]+)" of relation "suppliers" does not exist/i)
+                   || errMsg.match(/Could not find the '([^']+)' column/i);
+        if (match && match[1] && match[1] in fbPayload) {
+          delete fbPayload[match[1]];
+          continue;
+        }
+        break;
+      }
     }
 
     if (error && !data) {
       return NextResponse.json({ success: false, error: error.message }, { status: 400 });
     }
+
+    const normalizedData = {
+      ...data,
+      company: data?.company || data?.company_name || supplierCompany,
+      company_name: data?.company_name || data?.company || supplierCompany,
+      balance: numBalance,
+      current_balance: numBalance,
+      opening_balance: numBalance,
+      initial_balance: numBalance
+    };
 
     // Resolve user details
     const { data: { user: callerUser } } = await supabase.auth.getUser().catch(() => ({ data: { user: null } }));
@@ -208,7 +298,7 @@ export async function POST(req: NextRequest) {
       user: { id: callerUser?.id, name: callerName, role: callerRole }
     });
 
-    return NextResponse.json({ success: true, data, supplier: data, message: 'تم حفظ المورد بنجاح' }, { status: 201 });
+    return NextResponse.json({ success: true, data: normalizedData, supplier: normalizedData, message: 'تم حفظ المورد بنجاح' }, { status: 201 });
   } catch (err: any) {
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });
   }
@@ -220,7 +310,19 @@ export async function PUT(req: NextRequest) {
     const supabase = await createClient();
 
     const body = await req.json();
-    const { id, name, company_name, phone, balance, current_balance, notes, payment_amount } = body;
+    const { 
+      id, 
+      name, 
+      company, 
+      company_name, 
+      phone, 
+      balance, 
+      current_balance, 
+      opening_balance, 
+      initial_balance, 
+      notes, 
+      payment_amount 
+    } = body;
 
     if (!id) return NextResponse.json({ success: false, error: 'معرف المورد مطلوب' }, { status: 400 });
 
@@ -238,12 +340,19 @@ export async function PUT(req: NextRequest) {
     };
 
     if (name !== undefined) updates.name = name.trim();
-    if (company_name !== undefined) updates.company_name = company_name.trim();
+    if (company_name !== undefined) {
+      updates.company_name = company_name.trim();
+      updates.company = company_name.trim();
+    }
+    if (company !== undefined) {
+      updates.company = company.trim();
+      updates.company_name = company.trim();
+    }
     if (phone !== undefined) updates.phone = phone ? phone.trim() : null;
     if (notes !== undefined) updates.notes = notes ? notes.trim() : null;
 
     let recordedPaymentAmount = 0;
-    const supplierTitle = existing.company_name || existing.name || 'مورد';
+    const supplierTitle = existing.company_name || existing.company || existing.name || 'مورد';
 
     // Resolve caller user
     const { data: { user: callerUser } } = await supabase.auth.getUser().catch(() => ({ data: { user: null } }));
@@ -261,6 +370,8 @@ export async function PUT(req: NextRequest) {
       const newBalance = Math.max(0, currentBal - recordedPaymentAmount);
       updates.balance = newBalance;
       updates.current_balance = newBalance;
+      updates.opening_balance = newBalance;
+      updates.initial_balance = newBalance;
 
       // 1. Insert into supplier_payments table
       const supPaymentRecord: any = {
@@ -342,17 +453,83 @@ export async function PUT(req: NextRequest) {
         user: { id: callerUser?.id, name: callerName, role: callerRole }
       });
 
-    } else if (balance !== undefined || current_balance !== undefined) {
-      const b = Number(current_balance !== undefined ? current_balance : balance);
+    } else if (balance !== undefined || current_balance !== undefined || opening_balance !== undefined || initial_balance !== undefined) {
+      const b = Number(current_balance ?? balance ?? opening_balance ?? initial_balance ?? 0);
       updates.balance = b;
       updates.current_balance = b;
+      updates.opening_balance = b;
+      updates.initial_balance = b;
     }
 
-    let { data: updated, error } = await adminClient.from('suppliers').update(updates).eq('id', id).select().maybeSingle();
+    // Resilient update stripping any non-existent column
+    let updatePayload = { ...updates };
+    let updated: any = null;
+    let error: any = null;
+
+    for (let i = 0; i < 7; i++) {
+      const res = await adminClient.from('suppliers').update(updatePayload).eq('id', id).select().maybeSingle();
+      if (!res.error && res.data) {
+        updated = res.data;
+        error = null;
+        break;
+      }
+      error = res.error;
+      const errMsg = error?.message || '';
+
+      const match = errMsg.match(/column "([^"]+)" of relation "suppliers" does not exist/i)
+                 || errMsg.match(/Could not find the '([^']+)' column/i);
+      if (match && match[1] && match[1] in updatePayload) {
+        delete updatePayload[match[1]];
+        continue;
+      }
+
+      if (errMsg.includes('opening_balance') && 'opening_balance' in updatePayload) {
+        delete updatePayload.opening_balance;
+        continue;
+      }
+      if (errMsg.includes('initial_balance') && 'initial_balance' in updatePayload) {
+        delete updatePayload.initial_balance;
+        continue;
+      }
+      if (errMsg.includes('current_balance') && 'current_balance' in updatePayload) {
+        delete updatePayload.current_balance;
+        continue;
+      }
+      if (errMsg.includes('company_name') && 'company_name' in updatePayload) {
+        delete updatePayload.company_name;
+        continue;
+      }
+      if (errMsg.includes('company') && 'company' in updatePayload) {
+        delete updatePayload.company;
+        continue;
+      }
+      if (errMsg.includes('updated_at') && 'updated_at' in updatePayload) {
+        delete updatePayload.updated_at;
+        continue;
+      }
+      break;
+    }
 
     if (error || !updated) {
-      const fb = await supabase.from('suppliers').update(updates).eq('id', id).select().maybeSingle();
-      updated = fb.data || { ...existing, ...updates };
+      let fbPayload = { ...updatePayload };
+      for (let i = 0; i < 7; i++) {
+        const fb = await supabase.from('suppliers').update(fbPayload).eq('id', id).select().maybeSingle();
+        if (!fb.error && fb.data) {
+          updated = fb.data;
+          error = null;
+          break;
+        }
+        error = fb.error;
+        const errMsg = error?.message || '';
+        const match = errMsg.match(/column "([^"]+)" of relation "suppliers" does not exist/i)
+                   || errMsg.match(/Could not find the '([^']+)' column/i);
+        if (match && match[1] && match[1] in fbPayload) {
+          delete fbPayload[match[1]];
+          continue;
+        }
+        break;
+      }
+      updated = updated || { ...existing, ...updates };
     }
 
     return NextResponse.json({
@@ -379,7 +556,7 @@ export async function DELETE(req: NextRequest) {
 
     if (!id) return NextResponse.json({ success: false, error: 'معرف المورد مطلوب' }, { status: 400 });
 
-    const { data: existing } = await adminClient.from('suppliers').select('name, company_name').eq('id', id).maybeSingle();
+    const { data: existing } = await adminClient.from('suppliers').select('name, company, company_name').eq('id', id).maybeSingle();
 
     const { error } = await adminClient.from('suppliers').delete().eq('id', id);
     if (error) {
@@ -396,7 +573,7 @@ export async function DELETE(req: NextRequest) {
     await logAction({
       actionType: 'حذف مورد',
       category: 'المشتريات والموردين',
-      details: `قام ${callerName || 'المشرف'} بحذف المورد (${existing?.company_name || existing?.name || id}) نهائياً من النظام`,
+      details: `قام ${callerName || 'المشرف'} بحذف المورد (${existing?.company_name || existing?.company || existing?.name || id}) نهائياً من النظام`,
       user: { id: callerUser?.id, name: callerName }
     });
 
