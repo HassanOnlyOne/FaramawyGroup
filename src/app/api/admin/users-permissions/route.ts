@@ -62,11 +62,8 @@ export async function GET() {
 
     const safeProfiles = Array.isArray(profiles) ? profiles : [];
 
-    // Filter out customer accounts from team list
-    const teamProfiles = safeProfiles.filter((p: any) => p.role !== 'customer');
-
-    // Map profiles into team user entities
-    const team = teamProfiles.map((p: any) => {
+    // Map all profiles into user entities (including customers)
+    const team = safeProfiles.map((p: any) => {
       let roleLabel = 'موظف';
       if (p.role === 'super_owner' || p.email?.includes('owner') || p.email?.includes('admin@elfarmawy.com')) {
         roleLabel = 'مالك النظام (Super Owner)';

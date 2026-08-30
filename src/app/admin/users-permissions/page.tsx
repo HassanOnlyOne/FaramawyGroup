@@ -329,9 +329,10 @@ export default function UsersPermissionsPage() {
     }
   };
 
-  // Divide users into Admin/Team & Customer groups
-  const adminUsers = users.filter(u => u.role !== 'customer');
-  const customerUsers = users.filter(u => u.role === 'customer');
+  // Divide users into Staff/Management & Customer groups
+  const ADMIN_ROLES = ['admin', 'staff', 'moderator', 'super_owner', 'owner', 'manager', 'delegate'];
+  const staffMembers = users.filter(u => ADMIN_ROLES.includes(u.role));
+  const customerMembers = users.filter(u => !ADMIN_ROLES.includes(u.role));
 
   const renderUserRow = (user: any) => {
     const isLocked = user.is_locked;
@@ -339,7 +340,7 @@ export default function UsersPermissionsPage() {
     return (
       <tr key={user.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
         <td className="p-4 whitespace-nowrap">
-          <div className="font-black text-slate-900 dark:text-white text-sm">{user.full_name}</div>
+          <div className="font-black text-slate-900 dark:text-white text-sm">{user.full_name || user.store_name}</div>
           <div className="text-xs text-slate-500 dark:text-slate-400 font-mono">{user.email}</div>
           {user.phone && user.phone !== '---' && (
             <div className="text-[11px] text-slate-400 font-mono mt-0.5">{formatNumber(user.phone)}</div>
@@ -558,15 +559,15 @@ export default function UsersPermissionsPage() {
                     {/* SECTION 1: ADMIN & STAFF TEAM */}
                     <tr className="bg-slate-100/80 dark:bg-slate-800/80">
                       <td colSpan={4} className="px-4 py-2.5 font-black text-xs text-brand-800 dark:text-brand-300 border-y border-slate-200 dark:border-slate-700">
-                        🛡️ فريق الإدارة والموظفين والمناديب ({formatNumber(adminUsers.length)})
+                        الإدارة ({formatNumber(staffMembers.length)})
                       </td>
                     </tr>
-                    {adminUsers.length === 0 ? (
+                    {staffMembers.length === 0 ? (
                       <tr>
                         <td colSpan={4} className="p-4 text-center text-slate-400 text-xs">لا يوجد إداريون مسجلون</td>
                       </tr>
                     ) : (
-                      adminUsers.map(renderUserRow)
+                      staffMembers.map(renderUserRow)
                     )}
 
                     {/* VISUAL SEPARATOR */}
@@ -579,15 +580,15 @@ export default function UsersPermissionsPage() {
                     {/* SECTION 2: CUSTOMERS & MERCHANTS */}
                     <tr className="bg-emerald-50/80 dark:bg-emerald-950/60">
                       <td colSpan={4} className="px-4 py-2.5 font-black text-xs text-emerald-900 dark:text-emerald-300 border-y border-emerald-200 dark:border-emerald-800">
-                        🏪 العملاء والتجار المعتمدون ({formatNumber(customerUsers.length)})
+                        العملاء والتجار المعتمدون ({formatNumber(customerMembers.length)})
                       </td>
                     </tr>
-                    {customerUsers.length === 0 ? (
+                    {customerMembers.length === 0 ? (
                       <tr>
                         <td colSpan={4} className="p-4 text-center text-slate-400 text-xs">لا يوجد عملاء مسجلون</td>
                       </tr>
                     ) : (
-                      customerUsers.map(renderUserRow)
+                      customerMembers.map(renderUserRow)
                     )}
                   </>
                 )}
