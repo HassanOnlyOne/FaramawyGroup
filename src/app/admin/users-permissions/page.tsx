@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { useToast } from '@/components/ui/toast';
 import { useNumberFormat } from '@/context/number-format-context';
-import { ShieldCheck, ShieldAlert, KeyRound, Users, Check, X, Lock, Save, Loader2, RefreshCw, UserPlus, Mail, Phone, LockKeyhole, Eye, EyeOff, Key } from 'lucide-react';
+import { ShieldCheck, ShieldAlert, KeyRound, Users, Check, X, Lock, Save, Loader2, RefreshCw, UserPlus, Mail, Phone, LockKeyhole, Eye, EyeOff, Key, AlertCircle, CheckCircle2 } from 'lucide-react';
 
 const PERMISSION_KEYS = [
   { key: 'orders', label: 'الوصول للطلبات والمبيعات' },
@@ -24,6 +24,9 @@ export default function UsersPermissionsPage() {
   const [users, setUsers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState<string | null>(null);
+
+  // Pending Password Reset Requests
+  const [pendingResets, setPendingResets] = useState<any[]>([]);
 
   // New User Modal State
   const [showAddModal, setShowAddModal] = useState(false);
@@ -53,6 +56,7 @@ export default function UsersPermissionsPage() {
 
   useEffect(() => {
     fetchUsers();
+    fetchPendingResets();
   }, []);
 
   async function fetchUsers() {
@@ -65,9 +69,7 @@ export default function UsersPermissionsPage() {
       if (res.ok) {
         const json = await res.json();
         if (json.success && Array.isArray(json.data)) {
-          // Exclude customers to display team members only
-          const teamOnly = json.data.filter((u: any) => u.role !== 'customer');
-          setUsers(teamOnly);
+          setUsers(json.data);
         }
       }
     } catch (err) {
@@ -76,6 +78,55 @@ export default function UsersPermissionsPage() {
       setLoading(false);
     }
   }
+
+  async function fetchPendingResets() {
+    try {
+      const res = await fetch(`/api/admin/password-resets?t=${Date.now()}`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && Array.isArray(json.data)) {
+          setPendingResets(json.data);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch pending password resets:', err);
+    }
+  }
+
+  const handleResolveResetRequest = async (requestItem: any) => {
+    try {
+      await fetch('/api/admin/password-resets', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: requestItem.id,
+          phone_or_email: requestItem.phone_or_email
+        })
+      });
+
+      toast({
+        title: 'تم تحديث الحالة',
+        description: `تم وسم طلب (${requestItem.phone_or_email}) كـ تم الحل`,
+        type: 'success'
+      });
+
+      // Remove from local banner state
+      setPendingResets(prev => prev.filter(r => r.id !== requestItem.id && r.phone_or_email !== requestItem.phone_or_email));
+
+      // Check if user exists in users array and trigger reset password modal
+      const matchedUser = users.find(u => 
+        (u.phone && u.phone.includes(requestItem.phone_or_email)) ||
+        (u.email && u.email.toLowerCase() === requestItem.phone_or_email.toLowerCase())
+      );
+
+      if (matchedUser) {
+        setResetUser(matchedUser);
+        setNewPassword('');
+      }
+    } catch (err: any) {
+      toast({ title: 'خطأ', description: err.message, type: 'error' });
+    }
+  };
 
   const handleRoleChange = (userId: string, newRole: string) => {
     setUsers(prev => prev.map(u => {
@@ -97,6 +148,8 @@ export default function UsersPermissionsPage() {
         newPermissions.customers = true;
       } else if (newRole === 'staff') {
         roleLabel = 'موظف / كاشير';
+      } else if (newRole === 'customer') {
+        roleLabel = 'عميل / تاجر معتمد';
       }
 
       return {
@@ -148,6 +201,7 @@ export default function UsersPermissionsPage() {
             else if (updatedUser.role === 'admin') roleLabel = 'المدير العام (Admin)';
             else if (updatedUser.role === 'delegate') roleLabel = 'مندوب توزيع ومبيعات';
             else if (updatedUser.role === 'staff') roleLabel = 'موظف / كاشير';
+            else if (updatedUser.role === 'customer') roleLabel = 'عميل / تاجر معتمد';
 
             return {
               ...u,
@@ -275,6 +329,113 @@ export default function UsersPermissionsPage() {
     }
   };
 
+  // Divide users into Admin/Team & Customer groups
+  const adminUsers = users.filter(u => u.role !== 'customer');
+  const customerUsers = users.filter(u => u.role === 'customer');
+
+  const renderUserRow = (user: any) => {
+    const isLocked = user.is_locked;
+
+    return (
+      <tr key={user.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
+        <td className="p-4 whitespace-nowrap">
+          <div className="font-black text-slate-900 dark:text-white text-sm">{user.full_name}</div>
+          <div className="text-xs text-slate-500 dark:text-slate-400 font-mono">{user.email}</div>
+          {user.phone && user.phone !== '---' && (
+            <div className="text-[11px] text-slate-400 font-mono mt-0.5">{formatNumber(user.phone)}</div>
+          )}
+          
+          {/* Password Badge & Reset Trigger */}
+          <div className="flex items-center gap-2 mt-2 pt-1.5 border-t border-slate-100 dark:border-slate-800/80">
+            <span className="font-mono text-[11px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700">
+              ••••••••
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setResetUser(user);
+                setNewPassword('');
+                setShowResetPassword(false);
+              }}
+              className="text-[11px] font-bold text-amber-600 dark:text-amber-400 hover:underline flex items-center gap-1 cursor-pointer"
+              title="تعيين كلمة مرور جديدة لهذا المستخدم"
+            >
+              <Key className="w-3 h-3" />
+              <span>تعيين كلمة مرور جديدة</span>
+            </button>
+          </div>
+        </td>
+
+        <td className="p-4 whitespace-nowrap">
+          {isLocked ? (
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-purple-100 dark:bg-purple-950/60 text-purple-900 dark:text-purple-200 rounded-xl font-bold text-xs border border-purple-300 dark:border-purple-800">
+              <Lock className="w-3.5 h-3.5" />
+              <span>مالك النظام (Super Owner)</span>
+            </div>
+          ) : (
+            <select
+              value={user.role}
+              onChange={(e) => handleRoleChange(user.id, e.target.value)}
+              className="p-2 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:border-brand-500 cursor-pointer"
+            >
+              <option value="admin">المدير العام (Admin)</option>
+              <option value="delegate">مندوب توزيع ومبيعات</option>
+              <option value="staff">موظف / كاشير</option>
+              <option value="customer">عميل / تاجر معتمد</option>
+            </select>
+          )}
+        </td>
+
+        <td className="p-4">
+          <div className="flex flex-wrap gap-2 max-w-xl">
+            {PERMISSION_KEYS.map(perm => {
+              const isAllowed = Boolean(user.permissions?.[perm.key]);
+
+              return (
+                <label
+                  key={perm.key}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-semibold cursor-pointer border transition-all ${
+                    isAllowed
+                      ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-900 dark:text-emerald-200 border-emerald-300 dark:border-emerald-800'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-400 border-slate-200 dark:border-slate-700 opacity-60'
+                  } ${isLocked ? 'cursor-not-allowed opacity-90' : ''}`}
+                >
+                  <input
+                    type="checkbox"
+                    disabled={isLocked || user.role === 'admin' || user.role === 'super_owner'}
+                    checked={isAllowed}
+                    onChange={() => handlePermissionToggle(user.id, perm.key)}
+                    className="w-3.5 h-3.5 text-emerald-600 rounded"
+                  />
+                  <span>{perm.label}</span>
+                </label>
+              );
+            })}
+          </div>
+        </td>
+
+        <td className="p-4 whitespace-nowrap text-center">
+          <button
+            onClick={() => handleSaveUser(user)}
+            disabled={savingId === user.id || isLocked}
+            className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold shadow-sm transition-all cursor-pointer ${
+              isLocked 
+                ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed border border-slate-200 dark:border-slate-700' 
+                : 'btn-primary'
+            }`}
+          >
+            {savingId === user.id ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Save className="w-4 h-4" />
+            )}
+            <span>حفظ التعديلات</span>
+          </button>
+        </td>
+      </tr>
+    );
+  };
+
   return (
     <AdminLayout>
       <div className="space-y-6">
@@ -282,9 +443,9 @@ export default function UsersPermissionsPage() {
           <div>
             <h1 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white flex items-center gap-3">
               <ShieldCheck className="w-8 h-8 text-brand-600 dark:text-emerald-400" />
-              <span>إدارة الفريق والصلاحيات (Team & Permissions)</span>
+              <span>إدارة الفريق والعملاء والصلاحيات (Team & Permissions)</span>
             </h1>
-            <p className="text-slate-500 dark:text-slate-400 text-xs mt-1">تحديد مستويات الوصول والأدوار الوظيفية وإعادة تعيين كلمات المرور لفريق العمل والمديرين</p>
+            <p className="text-slate-500 dark:text-slate-400 text-xs mt-1">تحديد مستويات الوصول والأدوار الوظيفية وإعادة تعيين كلمات المرور لفريق العمل والعملاء</p>
           </div>
           <div className="flex items-center gap-3">
             <button
@@ -292,10 +453,13 @@ export default function UsersPermissionsPage() {
               className="btn-primary flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold shadow cursor-pointer"
             >
               <UserPlus className="w-4 h-4" />
-              <span>إضافة عضو جديد للفريق</span>
+              <span>إضافة مستخدم جديد</span>
             </button>
             <button
-              onClick={fetchUsers}
+              onClick={() => {
+                fetchUsers();
+                fetchPendingResets();
+              }}
               className="btn-secondary flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold shadow-sm cursor-pointer"
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
@@ -304,7 +468,35 @@ export default function UsersPermissionsPage() {
           </div>
         </div>
 
-        {/* Roles Overview Cards */}
+        {/* Password Reset Alert Banner */}
+        {pendingResets.length > 0 && (
+          <div className="bg-rose-50 dark:bg-rose-950/60 border-2 border-rose-500/40 p-4 rounded-3xl shadow-md space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-rose-900 dark:text-rose-200 font-black text-sm sm:text-base">
+                <AlertCircle className="w-6 h-6 text-rose-600 dark:text-rose-400 shrink-0" />
+                <span>يوجد ({formatNumber(pendingResets.length)}) طلب استرجاع كلمة مرور جديد من الأرقام/البريد التالي:</span>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+              {pendingResets.map(req => (
+                <div key={req.id || req.phone_or_email} className="bg-white dark:bg-slate-900 p-3 rounded-2xl border border-rose-200 dark:border-rose-800 flex items-center justify-between gap-2 shadow-sm">
+                  <div>
+                    <span className="font-mono font-bold text-xs text-slate-900 dark:text-white block">{req.phone_or_email}</span>
+                    <span className="text-[10px] text-slate-400 block">طلب استرجاع معلق</span>
+                  </div>
+                  <button
+                    onClick={() => handleResolveResetRequest(req)}
+                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer shrink-0 shadow-sm"
+                  >
+                    تم الحل / تعيين باسورد
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Overview Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="bg-purple-50/70 dark:bg-purple-950/40 p-5 rounded-3xl border border-purple-200 dark:border-purple-800/60 shadow-sm">
             <div className="flex items-center gap-2 text-purple-900 dark:text-purple-200 font-black text-sm mb-1">
@@ -329,26 +521,26 @@ export default function UsersPermissionsPage() {
           <div className="bg-slate-50 dark:bg-slate-900 p-5 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm">
             <div className="flex items-center gap-2 text-slate-900 dark:text-white font-black text-sm mb-1">
               <Users className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-              <span>فريق العمل والموظفين (Staff & Delegates)</span>
+              <span>العملاء والتجار والمناديب</span>
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-              صلاحيات مخصصة ومحددة حسب طبيعة العمل والمهام عبر مربعات الاختيار في الجدول.
+              صلاحيات مخصصة وتصنيف منفصل لكل فئة في الجدول أدناه مع تحكم كامل بكلمات المرور.
             </p>
           </div>
         </div>
 
-        {/* Users List Table */}
+        {/* Unified Table with Visual Separator */}
         <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden">
           <div className="p-5 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 flex items-center justify-between">
-            <h2 className="font-bold text-slate-900 dark:text-white text-base">أعضاء الفريق والحسابات الإدارية</h2>
-            <span className="text-xs font-bold text-slate-500 dark:text-slate-400">{formatNumber(users.length)} عضو فريق</span>
+            <h2 className="font-bold text-slate-900 dark:text-white text-base">المستخدمون والمصرح لهم بالمنظومة</h2>
+            <span className="text-xs font-bold text-slate-500 dark:text-slate-400">{formatNumber(users.length)} إجمالي المسجلين</span>
           </div>
 
           <div className="overflow-x-auto">
             <table className="w-full text-right text-sm">
               <thead className="bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold text-xs border-b border-slate-200 dark:border-slate-700">
                 <tr>
-                  <th className="p-4 whitespace-nowrap">عضو الفريق والحساب</th>
+                  <th className="p-4 whitespace-nowrap">المستخدم والحساب</th>
                   <th className="p-4 whitespace-nowrap">الرتبة والدور الوظيفي</th>
                   <th className="p-4 whitespace-nowrap">الصلاحيات الممنوحة للشاشات</th>
                   <th className="p-4 whitespace-nowrap text-center">إجراءات</th>
@@ -361,113 +553,44 @@ export default function UsersPermissionsPage() {
                       <Loader2 className="w-8 h-8 animate-spin mx-auto text-brand-600 dark:text-emerald-400" />
                     </td>
                   </tr>
-                ) : users.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} className="p-10 text-center text-slate-500 dark:text-slate-400 font-medium">
-                      لا يوجد أعضاء فريق مسجلون حالياً
-                    </td>
-                  </tr>
-                ) : users.map(user => {
-                  const isLocked = user.is_locked;
-
-                  return (
-                    <tr key={user.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
-                      <td className="p-4 whitespace-nowrap">
-                        <div className="font-black text-slate-900 dark:text-white text-sm">{user.full_name}</div>
-                        <div className="text-xs text-slate-500 dark:text-slate-400 font-mono">{user.email}</div>
-                        {user.phone && user.phone !== '---' && (
-                          <div className="text-[11px] text-slate-400 font-mono mt-0.5">{formatNumber(user.phone)}</div>
-                        )}
-                        
-                        {/* Password Badge & Reset Trigger */}
-                        <div className="flex items-center gap-2 mt-2 pt-1.5 border-t border-slate-100 dark:border-slate-800/80">
-                          <span className="font-mono text-[11px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700">
-                            ••••••••
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setResetUser(user);
-                              setNewPassword('');
-                              setShowResetPassword(false);
-                            }}
-                            className="text-[11px] font-bold text-amber-600 dark:text-amber-400 hover:underline flex items-center gap-1 cursor-pointer"
-                            title="تعيين كلمة مرور جديدة لهذا المستخدم"
-                          >
-                            <Key className="w-3 h-3" />
-                            <span>تعيين كلمة مرور جديدة</span>
-                          </button>
-                        </div>
-                      </td>
-
-                      <td className="p-4 whitespace-nowrap">
-                        {isLocked ? (
-                          <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-purple-100 dark:bg-purple-950/60 text-purple-900 dark:text-purple-200 rounded-xl font-bold text-xs border border-purple-300 dark:border-purple-800">
-                            <Lock className="w-3.5 h-3.5" />
-                            <span>مالك النظام (Super Owner)</span>
-                          </div>
-                        ) : (
-                          <select
-                            value={user.role}
-                            onChange={(e) => handleRoleChange(user.id, e.target.value)}
-                            className="p-2 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:border-brand-500 cursor-pointer"
-                          >
-                            <option value="admin">المدير العام (Admin)</option>
-                            <option value="delegate">مندوب توزيع ومبيعات</option>
-                            <option value="staff">موظف / كاشير</option>
-                          </select>
-                        )}
-                      </td>
-
-                      <td className="p-4">
-                        <div className="flex flex-wrap gap-2 max-w-xl">
-                          {PERMISSION_KEYS.map(perm => {
-                            const isAllowed = Boolean(user.permissions?.[perm.key]);
-
-                            return (
-                              <label
-                                key={perm.key}
-                                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-semibold cursor-pointer border transition-all ${
-                                  isAllowed
-                                    ? 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-900 dark:text-emerald-200 border-emerald-300 dark:border-emerald-800'
-                                    : 'bg-slate-100 dark:bg-slate-800 text-slate-400 border-slate-200 dark:border-slate-700 opacity-60'
-                                } ${isLocked ? 'cursor-not-allowed opacity-90' : ''}`}
-                              >
-                                <input
-                                  type="checkbox"
-                                  disabled={isLocked || user.role === 'admin' || user.role === 'super_owner'}
-                                  checked={isAllowed}
-                                  onChange={() => handlePermissionToggle(user.id, perm.key)}
-                                  className="w-3.5 h-3.5 text-emerald-600 rounded"
-                                />
-                                <span>{perm.label}</span>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      </td>
-
-                      <td className="p-4 whitespace-nowrap text-center">
-                        <button
-                          onClick={() => handleSaveUser(user)}
-                          disabled={savingId === user.id || isLocked}
-                          className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold shadow-sm transition-all cursor-pointer ${
-                            isLocked 
-                              ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed border border-slate-200 dark:border-slate-700' 
-                              : 'btn-primary'
-                          }`}
-                        >
-                          {savingId === user.id ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <Save className="w-4 h-4" />
-                          )}
-                          <span>حفظ التعديلات</span>
-                        </button>
+                ) : (
+                  <>
+                    {/* SECTION 1: ADMIN & STAFF TEAM */}
+                    <tr className="bg-slate-100/80 dark:bg-slate-800/80">
+                      <td colSpan={4} className="px-4 py-2.5 font-black text-xs text-brand-800 dark:text-brand-300 border-y border-slate-200 dark:border-slate-700">
+                        🛡️ فريق الإدارة والموظفين والمناديب ({formatNumber(adminUsers.length)})
                       </td>
                     </tr>
-                  );
-                })}
+                    {adminUsers.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} className="p-4 text-center text-slate-400 text-xs">لا يوجد إداريون مسجلون</td>
+                      </tr>
+                    ) : (
+                      adminUsers.map(renderUserRow)
+                    )}
+
+                    {/* VISUAL SEPARATOR */}
+                    <tr className="bg-slate-200/50 dark:bg-slate-800/50">
+                      <td colSpan={4} className="p-0">
+                        <div className="border-b-2 border-slate-300 dark:border-slate-700 my-2" />
+                      </td>
+                    </tr>
+
+                    {/* SECTION 2: CUSTOMERS & MERCHANTS */}
+                    <tr className="bg-emerald-50/80 dark:bg-emerald-950/60">
+                      <td colSpan={4} className="px-4 py-2.5 font-black text-xs text-emerald-900 dark:text-emerald-300 border-y border-emerald-200 dark:border-emerald-800">
+                        🏪 العملاء والتجار المعتمدون ({formatNumber(customerUsers.length)})
+                      </td>
+                    </tr>
+                    {customerUsers.length === 0 ? (
+                      <tr>
+                        <td colSpan={4} className="p-4 text-center text-slate-400 text-xs">لا يوجد عملاء مسجلون</td>
+                      </tr>
+                    ) : (
+                      customerUsers.map(renderUserRow)
+                    )}
+                  </>
+                )}
               </tbody>
             </table>
           </div>
@@ -499,7 +622,7 @@ export default function UsersPermissionsPage() {
                 <input
                   type="text"
                   disabled
-                  value={`${resetUser.full_name} (${resetUser.email})`}
+                  value={`${resetUser.full_name} (${resetUser.email || resetUser.phone})`}
                   className="w-full p-2.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-800 dark:text-slate-200"
                 />
               </div>
@@ -566,7 +689,7 @@ export default function UsersPermissionsPage() {
             <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-brand-50 dark:bg-slate-800">
               <h3 className="font-bold text-base text-brand-900 dark:text-white flex items-center gap-2">
                 <UserPlus className="w-5 h-5 text-brand-600 dark:text-emerald-400" />
-                <span>إضافة مستخدم جديد لفريق العمل</span>
+                <span>إضافة مستخدم جديد</span>
               </h3>
               <button
                 onClick={() => setShowAddModal(false)}
@@ -640,6 +763,7 @@ export default function UsersPermissionsPage() {
                   <option value="admin">مدير عام (Admin)</option>
                   <option value="delegate">مندوب توزيع ومبيعات</option>
                   <option value="staff">موظف / كاشير / مسؤول مخزن</option>
+                  <option value="customer">عميل / تاجر معتمد</option>
                 </select>
               </div>
 
