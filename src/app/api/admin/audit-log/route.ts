@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
     const search = searchParams.get('search');
     const startDate = searchParams.get('startDate') || searchParams.get('from');
     const endDate = searchParams.get('endDate') || searchParams.get('to');
-    const limit = Math.min(1000, Math.max(50, Number(searchParams.get('limit') || 500)));
+    const limit = Math.min(10000, Math.max(50, Number(searchParams.get('limit') || 5000)));
 
     let dbLogs: any[] = [];
     try {

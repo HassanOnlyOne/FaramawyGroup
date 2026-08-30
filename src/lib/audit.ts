@@ -211,7 +211,7 @@ export async function logAction({
 
     // Store in memory buffer for instant reflection
     memoryAuditLogs.unshift(newLog);
-    if (memoryAuditLogs.length > 500) memoryAuditLogs.pop();
+    if (memoryAuditLogs.length > 5000) memoryAuditLogs.pop();
 
     return data || newLog;
   } catch (err) {

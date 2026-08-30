@@ -221,6 +221,15 @@ export default function CustomersPage() {
                         <td className="p-4 font-bold text-slate-900 dark:text-slate-100 font-mono">{formatPriceShort(limitVal)}</td>
                         <td className="p-4">
                           <div className="flex items-center justify-center gap-2">
+                            {(c.is_credit_enabled === true || (c.is_credit_enabled === undefined && c.credit_enabled !== false)) ? (
+                              <span className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 flex items-center gap-1 whitespace-nowrap">
+                                ✓ الآجل مفعّل
+                              </span>
+                            ) : (
+                              <span className="px-2.5 py-1 rounded-lg text-[11px] font-bold bg-rose-500/20 text-rose-600 dark:text-rose-400 border border-rose-500/30 flex items-center gap-1 whitespace-nowrap">
+                                ✕ الآجل معطّل
+                              </span>
+                            )}
                             <button
                               onClick={() => setEditCustomer({ ...c })}
                               className="px-3 py-1.5 bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors"

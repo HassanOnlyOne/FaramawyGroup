@@ -234,7 +234,28 @@ export async function POST(req: NextRequest) {
     const total = Number(calculatedTotal);
     
     const prevBalance = previous_balance !== undefined ? Number(previous_balance) : Number(customerProfile?.previous_balance || 0);
-    const method = payment_method === 'credit' ? 'credit' : 'cash';
+    const method = (payment_method === 'credit' || payment_method === 'آجل' || payment_method === 'credit_payment') ? 'credit' : 'cash';
+
+    // 2. Strict Credit Validation for credit payment method
+    if (method === 'credit') {
+      const isCreditEnabled = customerProfile?.is_credit_enabled !== false && customerProfile?.credit_enabled !== false;
+      if (!isCreditEnabled) {
+        return NextResponse.json({
+          error: 'عفواً، خاصية الشراء بالآجل غير مفعلة لحسابك'
+        }, { status: 400 });
+      }
+
+      const creditLimit = Number(customerProfile?.credit_limit || 0);
+      const currentDebt = Number(customerProfile?.current_debt !== undefined && customerProfile?.current_debt !== null ? customerProfile.current_debt : (customerProfile?.previous_balance || 0));
+      const availableCredit = creditLimit - currentDebt;
+
+      if (total > availableCredit) {
+        return NextResponse.json({
+          error: `عفواً، إجمالي الطلب (${total} ج.م) يتجاوز الرصيد الائتماني المتاح لك (${availableCredit} ج.م)`
+        }, { status: 400 });
+      }
+    }
+
     const cashAdvance = method === 'credit' ? Math.min(total, Math.max(0, Number(paid_amount || 0))) : 0;
     const creditAddition = method === 'credit' ? Math.max(0, total - cashAdvance) : 0;
     const finalRemaining = remaining_amount !== undefined ? Number(remaining_amount) : creditAddition;
@@ -264,7 +285,7 @@ export async function POST(req: NextRequest) {
       paid_amount: cashAdvance,
       remaining_amount: finalRemaining,
       current_balance: method === 'credit' ? (prevBalance + finalRemaining) : prevBalance,
-      stock_deducted: true
+      stock_deducted: false
     };
 
     function contactPhoneClean(p: string) {
@@ -323,7 +344,8 @@ export async function POST(req: NextRequest) {
         previous_balance: prevBalance,
         paid_amount: cashAdvance,
         remaining_amount: finalRemaining,
-        current_balance: method === 'credit' ? (prevBalance + finalRemaining) : prevBalance
+        current_balance: method === 'credit' ? (prevBalance + finalRemaining) : prevBalance,
+        stock_deducted: false
       };
 
       const res3 = await adminClient.from('orders').insert([corePayload]).select().maybeSingle();
@@ -342,7 +364,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: orderError?.message || 'فشل إرسال الطلب' }, { status: 400 });
     }
 
-    // Insert order items
+    // Insert order items without deducting stock (stock is only deducted on status -> 'completed')
     if (orderItemsToInsert.length > 0) {
       const formattedOrderItems = orderItemsToInsert.map(oi => ({
         id: crypto.randomUUID(),
@@ -351,40 +373,6 @@ export async function POST(req: NextRequest) {
       }));
 
       await adminClient.from('order_items').insert(formattedOrderItems);
-
-      // Deduct stock once and only once at order creation
-      const qtyByProduct = new Map<string, number>();
-      for (const oi of orderItemsToInsert) {
-        const prodId = oi.product_id;
-        const qty = Number(oi.quantity || 0);
-        if (prodId && qty > 0) {
-          qtyByProduct.set(prodId, (qtyByProduct.get(prodId) || 0) + qty);
-        }
-      }
-
-      for (const [prodId, totalQty] of qtyByProduct.entries()) {
-        const { data: prod } = await adminClient
-          .from('products')
-          .select('stock_quantity')
-          .eq('id', prodId)
-          .maybeSingle();
-
-        if (prod) {
-          const currentStock = Number(prod.stock_quantity || 0);
-          const newStock = Math.max(0, currentStock - totalQty);
-          await adminClient
-            .from('products')
-            .update({ stock_quantity: newStock, updated_at: new Date().toISOString() })
-            .eq('id', prodId);
-        }
-      }
-    }
-
-    // Try setting stock_deducted flag on orders table if not set in attempt
-    try {
-      await adminClient.from('orders').update({ stock_deducted: true }).eq('id', order.id);
-    } catch {
-      // Ignored if column not present in schema
     }
 
     // Update customer previous_balance in profiles

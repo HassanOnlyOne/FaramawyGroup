@@ -55,7 +55,7 @@ export default function AuditLogsPage() {
       if (selectedCategory && selectedCategory !== 'all') {
         params.set('category', selectedCategory);
       }
-      params.set('limit', '500');
+      params.set('limit', '5000');
       params.set('t', Date.now().toString());
 
       let res = await fetch(`/api/admin/audit-log?${params.toString()}`);
