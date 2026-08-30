@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { useToast } from '@/components/ui/toast';
 import { useNumberFormat } from '@/context/number-format-context';
-import { ShieldCheck, ShieldAlert, KeyRound, Users, Check, X, Lock, Save, Loader2, RefreshCw, UserPlus, Mail, Phone, LockKeyhole } from 'lucide-react';
+import { ShieldCheck, ShieldAlert, KeyRound, Users, Check, X, Lock, Save, Loader2, RefreshCw, UserPlus, Mail, Phone, LockKeyhole, Eye, EyeOff, Key } from 'lucide-react';
 
 const PERMISSION_KEYS = [
   { key: 'orders', label: 'الوصول للطلبات والمبيعات' },
@@ -45,6 +45,12 @@ export default function UsersPermissionsPage() {
     }
   });
 
+  // Reset Password Modal State
+  const [resetUser, setResetUser] = useState<any>(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [showResetPassword, setShowResetPassword] = useState(false);
+  const [resettingPassword, setResettingPassword] = useState(false);
+
   useEffect(() => {
     fetchUsers();
   }, []);
@@ -59,7 +65,9 @@ export default function UsersPermissionsPage() {
       if (res.ok) {
         const json = await res.json();
         if (json.success && Array.isArray(json.data)) {
-          setUsers(json.data);
+          // Exclude customers to display team members only
+          const teamOnly = json.data.filter((u: any) => u.role !== 'customer');
+          setUsers(teamOnly);
         }
       }
     } catch (err) {
@@ -89,8 +97,6 @@ export default function UsersPermissionsPage() {
         newPermissions.customers = true;
       } else if (newRole === 'staff') {
         roleLabel = 'موظف / كاشير';
-      } else if (newRole === 'customer') {
-        roleLabel = 'عميل / تاجر معتمد';
       }
 
       return {
@@ -133,9 +139,7 @@ export default function UsersPermissionsPage() {
 
       const json = await res.json().catch(() => ({}));
 
-      // Strictly verify response is successful and data is present without errors
       if (res.ok && json.success === true && json.data) {
-        // Update local state with the exact server verified data
         const updatedUser = json.data;
         setUsers(prev => prev.map(u => {
           if (u.id === user.id) {
@@ -144,7 +148,6 @@ export default function UsersPermissionsPage() {
             else if (updatedUser.role === 'admin') roleLabel = 'المدير العام (Admin)';
             else if (updatedUser.role === 'delegate') roleLabel = 'مندوب توزيع ومبيعات';
             else if (updatedUser.role === 'staff') roleLabel = 'موظف / كاشير';
-            else if (updatedUser.role === 'customer') roleLabel = 'عميل / تاجر معتمد';
 
             return {
               ...u,
@@ -230,6 +233,48 @@ export default function UsersPermissionsPage() {
     }
   };
 
+  const handleResetPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetUser || !newPassword || newPassword.length < 6) {
+      toast({ title: 'تنبيه', description: 'كلمة المرور يجب أن تكون 6 خانات على الأقل', type: 'error' });
+      return;
+    }
+
+    setResettingPassword(true);
+    try {
+      const res = await fetch('/api/admin/users/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: resetUser.id,
+          newPassword: newPassword
+        })
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data.success) {
+        toast({
+          title: 'تم تحديث كلمة المرور بنجاح',
+          description: data.message || `تم تعيين كلمة مرور جديدة للمستخدم (${resetUser.full_name})`,
+          type: 'success'
+        });
+        setResetUser(null);
+        setNewPassword('');
+      } else {
+        toast({
+          title: 'خطأ في تحديث كلمة المرور',
+          description: data.error || 'فشل تعيين كلمة المرور',
+          type: 'error'
+        });
+      }
+    } catch (err: any) {
+      toast({ title: 'خطأ في الاتصال', description: err.message, type: 'error' });
+    } finally {
+      setResettingPassword(false);
+    }
+  };
+
   return (
     <AdminLayout>
       <div className="space-y-6">
@@ -237,21 +282,21 @@ export default function UsersPermissionsPage() {
           <div>
             <h1 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white flex items-center gap-3">
               <ShieldCheck className="w-8 h-8 text-brand-600 dark:text-emerald-400" />
-              <span>إدارة الفريق والصلاحيات (Users & Permissions)</span>
+              <span>إدارة الفريق والصلاحيات (Team & Permissions)</span>
             </h1>
-            <p className="text-slate-500 dark:text-slate-400 text-xs mt-1">تحديد مستويات الوصول والأدوار الوظيفية لفريق العمل والمديرين</p>
+            <p className="text-slate-500 dark:text-slate-400 text-xs mt-1">تحديد مستويات الوصول والأدوار الوظيفية وإعادة تعيين كلمات المرور لفريق العمل والمديرين</p>
           </div>
           <div className="flex items-center gap-3">
             <button
               onClick={() => setShowAddModal(true)}
-              className="btn-primary flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold shadow"
+              className="btn-primary flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs font-bold shadow cursor-pointer"
             >
               <UserPlus className="w-4 h-4" />
-              <span>إضافة مستخدم جديد</span>
+              <span>إضافة عضو جديد للفريق</span>
             </button>
             <button
               onClick={fetchUsers}
-              className="btn-secondary flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold shadow-sm"
+              className="btn-secondary flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold shadow-sm cursor-pointer"
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
               <span>تحديث</span>
@@ -259,7 +304,7 @@ export default function UsersPermissionsPage() {
           </div>
         </div>
 
-        {/* General Professional Roles Cards */}
+        {/* Roles Overview Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="bg-purple-50/70 dark:bg-purple-950/40 p-5 rounded-3xl border border-purple-200 dark:border-purple-800/60 shadow-sm">
             <div className="flex items-center gap-2 text-purple-900 dark:text-purple-200 font-black text-sm mb-1">
@@ -284,7 +329,7 @@ export default function UsersPermissionsPage() {
           <div className="bg-slate-50 dark:bg-slate-900 p-5 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm">
             <div className="flex items-center gap-2 text-slate-900 dark:text-white font-black text-sm mb-1">
               <Users className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-              <span>فريق العمل والموظفين (Staff)</span>
+              <span>فريق العمل والموظفين (Staff & Delegates)</span>
             </div>
             <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
               صلاحيات مخصصة ومحددة حسب طبيعة العمل والمهام عبر مربعات الاختيار في الجدول.
@@ -295,15 +340,15 @@ export default function UsersPermissionsPage() {
         {/* Users List Table */}
         <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden">
           <div className="p-5 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 flex items-center justify-between">
-            <h2 className="font-bold text-slate-900 dark:text-white text-base">المستخدمون المسجلون بالمنظومة</h2>
-            <span className="text-xs font-bold text-slate-500 dark:text-slate-400">{formatNumber(users.length)} مستخدمين فعليين</span>
+            <h2 className="font-bold text-slate-900 dark:text-white text-base">أعضاء الفريق والحسابات الإدارية</h2>
+            <span className="text-xs font-bold text-slate-500 dark:text-slate-400">{formatNumber(users.length)} عضو فريق</span>
           </div>
 
           <div className="overflow-x-auto">
             <table className="w-full text-right text-sm">
               <thead className="bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold text-xs border-b border-slate-200 dark:border-slate-700">
                 <tr>
-                  <th className="p-4 whitespace-nowrap">المستخدم والحساب</th>
+                  <th className="p-4 whitespace-nowrap">عضو الفريق والحساب</th>
                   <th className="p-4 whitespace-nowrap">الرتبة والدور الوظيفي</th>
                   <th className="p-4 whitespace-nowrap">الصلاحيات الممنوحة للشاشات</th>
                   <th className="p-4 whitespace-nowrap text-center">إجراءات</th>
@@ -319,7 +364,7 @@ export default function UsersPermissionsPage() {
                 ) : users.length === 0 ? (
                   <tr>
                     <td colSpan={4} className="p-10 text-center text-slate-500 dark:text-slate-400 font-medium">
-                      لا يوجد مستخدمون مسجلون حالياً
+                      لا يوجد أعضاء فريق مسجلون حالياً
                     </td>
                   </tr>
                 ) : users.map(user => {
@@ -333,6 +378,26 @@ export default function UsersPermissionsPage() {
                         {user.phone && user.phone !== '---' && (
                           <div className="text-[11px] text-slate-400 font-mono mt-0.5">{formatNumber(user.phone)}</div>
                         )}
+                        
+                        {/* Password Badge & Reset Trigger */}
+                        <div className="flex items-center gap-2 mt-2 pt-1.5 border-t border-slate-100 dark:border-slate-800/80">
+                          <span className="font-mono text-[11px] bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 px-2 py-0.5 rounded border border-slate-200 dark:border-slate-700">
+                            ••••••••
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setResetUser(user);
+                              setNewPassword('');
+                              setShowResetPassword(false);
+                            }}
+                            className="text-[11px] font-bold text-amber-600 dark:text-amber-400 hover:underline flex items-center gap-1 cursor-pointer"
+                            title="تعيين كلمة مرور جديدة لهذا المستخدم"
+                          >
+                            <Key className="w-3 h-3" />
+                            <span>تعيين كلمة مرور جديدة</span>
+                          </button>
+                        </div>
                       </td>
 
                       <td className="p-4 whitespace-nowrap">
@@ -345,12 +410,11 @@ export default function UsersPermissionsPage() {
                           <select
                             value={user.role}
                             onChange={(e) => handleRoleChange(user.id, e.target.value)}
-                            className="p-2 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:border-brand-500"
+                            className="p-2 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:border-brand-500 cursor-pointer"
                           >
                             <option value="admin">المدير العام (Admin)</option>
                             <option value="delegate">مندوب توزيع ومبيعات</option>
                             <option value="staff">موظف / كاشير</option>
-                            <option value="customer">عميل / تاجر معتمد</option>
                           </select>
                         )}
                       </td>
@@ -387,7 +451,7 @@ export default function UsersPermissionsPage() {
                         <button
                           onClick={() => handleSaveUser(user)}
                           disabled={savingId === user.id || isLocked}
-                          className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold shadow-sm transition-all ${
+                          className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold shadow-sm transition-all cursor-pointer ${
                             isLocked 
                               ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed border border-slate-200 dark:border-slate-700' 
                               : 'btn-primary'
@@ -410,6 +474,91 @@ export default function UsersPermissionsPage() {
         </div>
       </div>
 
+      {/* Reset Password Modal */}
+      {resetUser && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-xl w-full max-w-md overflow-hidden border border-slate-300 dark:border-slate-800 animate-scale-in">
+            <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-amber-50 dark:bg-amber-950/40">
+              <h3 className="font-bold text-base text-amber-900 dark:text-amber-200 flex items-center gap-2">
+                <Key className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+                <span>إعادة تعيين كلمة المرور</span>
+              </h3>
+              <button
+                onClick={() => setResetUser(null)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-white text-2xl font-bold cursor-pointer"
+              >
+                &times;
+              </button>
+            </div>
+
+            <form onSubmit={handleResetPasswordSubmit} className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                  المستخدم
+                </label>
+                <input
+                  type="text"
+                  disabled
+                  value={`${resetUser.full_name} (${resetUser.email})`}
+                  className="w-full p-2.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-800 dark:text-slate-200"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                  كلمة المرور الجديدة *
+                </label>
+                <div className="relative">
+                  <input
+                    type={showResetPassword ? 'text' : 'password'}
+                    required
+                    minLength={6}
+                    value={newPassword}
+                    onChange={e => setNewPassword(e.target.value)}
+                    placeholder="كلمة المرور الجديدة (6 خانات+)"
+                    className="w-full pr-4 pl-10 py-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-xl text-xs font-bold font-mono outline-none focus:border-amber-500"
+                    dir="ltr"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowResetPassword(!showResetPassword)}
+                    className="absolute left-3 top-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 focus:outline-none cursor-pointer"
+                    title={showResetPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+                  >
+                    {showResetPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <span className="text-[10px] text-slate-400 mt-1 block">
+                  سيتم تحديث كلمة المرور في قاعدة البيانات وحفظ العملية في سجل الحركات تلقائياً.
+                </span>
+              </div>
+
+              <div className="pt-2 flex gap-2">
+                <button
+                  type="submit"
+                  disabled={resettingPassword || !newPassword || newPassword.length < 6}
+                  className="flex-1 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white py-2.5 rounded-xl font-bold text-xs shadow transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  {resettingPassword ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Key className="w-4 h-4" />
+                  )}
+                  <span>تأكيد تحديث كلمة المرور</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setResetUser(null)}
+                  className="px-4 py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-bold rounded-xl border border-slate-200 dark:border-slate-700 text-xs cursor-pointer"
+                >
+                  إلغاء
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Add New User Modal */}
       {showAddModal && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
@@ -421,7 +570,7 @@ export default function UsersPermissionsPage() {
               </h3>
               <button
                 onClick={() => setShowAddModal(false)}
-                className="text-slate-400 hover:text-slate-600 dark:hover:text-white text-2xl font-bold"
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-white text-2xl font-bold cursor-pointer"
               >
                 &times;
               </button>
@@ -486,7 +635,7 @@ export default function UsersPermissionsPage() {
                 <select
                   value={newUserData.role}
                   onChange={e => setNewUserData({ ...newUserData, role: e.target.value })}
-                  className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:border-brand-500"
+                  className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:border-brand-500 cursor-pointer"
                 >
                   <option value="admin">مدير عام (Admin)</option>
                   <option value="delegate">مندوب توزيع ومبيعات</option>
@@ -525,14 +674,14 @@ export default function UsersPermissionsPage() {
                 <button
                   type="submit"
                   disabled={creatingUser}
-                  className="flex-1 btn-primary py-2.5 rounded-xl font-bold text-xs shadow"
+                  className="flex-1 btn-primary py-2.5 rounded-xl font-bold text-xs shadow cursor-pointer"
                 >
                   {creatingUser ? 'جاري الإضافة...' : 'إضافة وتفعيل الحساب'}
                 </button>
                 <button
                   type="button"
                   onClick={() => setShowAddModal(false)}
-                  className="btn-secondary px-4 py-2.5 rounded-xl text-xs font-bold"
+                  className="btn-secondary px-4 py-2.5 rounded-xl text-xs font-bold cursor-pointer"
                 >
                   إلغاء
                 </button>

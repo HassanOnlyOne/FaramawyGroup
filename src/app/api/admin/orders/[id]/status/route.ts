@@ -56,36 +56,41 @@ export async function PATCH(
     const targetOrderId = order.id;
     const currentStatus = order.status;
     
-    // Stock is ONLY deducted when status === 'completed'
-    const isCurrentlyDeducted = Boolean(order.stock_deducted === true || currentStatus === 'completed');
+    // Check if stock has ALREADY been deducted for this order
+    const isCurrentlyDeducted = order.stock_deducted === true;
     const isNowCompleted = status === 'completed';
     let willBeDeducted = isCurrentlyDeducted;
 
-    // 1. If changing status to 'completed' and stock was NOT yet deducted: DEDUCT STOCK
-    if (isNowCompleted && !isCurrentlyDeducted) {
-      if (Array.isArray(order.order_items)) {
-        const qtyByProduct = new Map<string, number>();
-        for (const item of order.order_items) {
-          const prodId = item.product_id || item.product?.id || item.id;
-          const qty = Number(item.quantity || 0);
-          if (prodId && qty > 0) {
-            qtyByProduct.set(prodId, (qtyByProduct.get(prodId) || 0) + qty);
+    // 1. When status becomes 'completed':
+    // If order.stock_deducted === true: bypass deduction completely to prevent double deduction.
+    // If order.stock_deducted === false (or null): deduct actual items and set stock_deducted = true.
+    if (isNowCompleted) {
+      if (!isCurrentlyDeducted) {
+        if (Array.isArray(order.order_items)) {
+          const qtyByProduct = new Map<string, number>();
+          for (const item of order.order_items) {
+            const prodId = item.product_id || item.product?.id || item.id;
+            const qty = Number(item.quantity || 0);
+            if (prodId && qty > 0) {
+              qtyByProduct.set(prodId, (qtyByProduct.get(prodId) || 0) + qty);
+            }
           }
-        }
 
-        for (const [prodId, totalQty] of qtyByProduct.entries()) {
-          const { data: product } = await adminClient.from('products').select('stock_quantity').eq('id', prodId).maybeSingle();
-          if (product) {
-            const currentStock = Number(product.stock_quantity || 0);
-            const newStock = Math.max(0, currentStock - totalQty);
-            await adminClient.from('products').update({ stock_quantity: newStock, updated_at: new Date().toISOString() }).eq('id', prodId);
+          for (const [prodId, totalQty] of qtyByProduct.entries()) {
+            const { data: product } = await adminClient.from('products').select('stock_quantity').eq('id', prodId).maybeSingle();
+            if (product) {
+              const currentStock = Number(product.stock_quantity || 0);
+              const newStock = Math.max(0, currentStock - totalQty);
+              await adminClient.from('products').update({ stock_quantity: newStock, updated_at: new Date().toISOString() }).eq('id', prodId);
+            }
           }
         }
+        willBeDeducted = true;
       }
-      willBeDeducted = true;
     }
 
-    // 2. If changing status away from 'completed' (e.g. cancelled/returned/pending) and stock WAS deducted: RESTORE STOCK
+    // 2. When cancelling or returning an order that was completed (or stock_deducted === true):
+    // Restore item quantities to stock and set stock_deducted = false.
     if (!isNowCompleted && isCurrentlyDeducted) {
       if (Array.isArray(order.order_items)) {
         const qtyByProduct = new Map<string, number>();
