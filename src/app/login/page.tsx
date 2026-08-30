@@ -5,12 +5,13 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import { useToast } from '@/components/ui/toast';
-import { LogIn, ArrowRight, Phone, Lock } from 'lucide-react';
+import { LogIn, ArrowRight, Phone, Lock, Eye, EyeOff } from 'lucide-react';
 import { BRAND } from '@/lib/constants';
 
 function LoginForm() {
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   
   const router = useRouter();
@@ -27,7 +28,10 @@ function LoginForm() {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!identifier.trim() || !password) {
+    const cleanIdentifier = identifier.trim();
+    const cleanPassword = password.trim();
+
+    if (!cleanIdentifier || !cleanPassword) {
       toast({
         title: 'تنبيه',
         description: 'يرجى إدخال رقم الهاتف أو البريد الإلكتروني وكلمة المرور',
@@ -43,8 +47,8 @@ function LoginForm() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          identifier: identifier.trim(),
-          password,
+          identifier: cleanIdentifier,
+          password: cleanPassword,
         }),
       });
 
@@ -68,7 +72,7 @@ function LoginForm() {
       const role = data.role || data.profile?.role || 'customer';
 
       // Role Redirection
-      if (['admin', 'owner', 'staff', 'manager'].includes(role)) {
+      if (['admin', 'owner', 'super_owner', 'staff', 'manager'].includes(role)) {
         router.push('/admin');
       } else {
         router.push('/');
@@ -115,22 +119,30 @@ function LoginForm() {
         </label>
         <div className="relative">
           <input
-            type="password"
+            type={showPassword ? 'text' : 'password'}
             required
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="w-full pr-10 pl-4 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 focus:border-brand-600 focus:ring-2 focus:ring-brand-500/20 text-slate-900 dark:text-white transition-all outline-none font-semibold text-sm"
+            className="w-full pr-10 pl-10 py-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 focus:border-brand-600 focus:ring-2 focus:ring-brand-500/20 text-slate-900 dark:text-white transition-all outline-none font-semibold text-sm"
             placeholder="••••••••"
             dir="ltr"
           />
           <Lock className="w-4 h-4 text-slate-400 absolute right-3.5 top-3.5" />
+          <button
+            type="button"
+            onClick={() => setShowPassword(!showPassword)}
+            className="absolute left-3 top-3.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 focus:outline-none transition-colors"
+            title={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+          >
+            {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+          </button>
         </div>
       </div>
 
       <button
         type="submit"
         disabled={isLoading}
-        className="w-full btn-primary font-bold py-3.5 px-4 rounded-xl transition-all shadow-md flex justify-center items-center gap-2 disabled:opacity-70 text-sm mt-6"
+        className="w-full btn-primary font-bold py-3.5 px-4 rounded-xl transition-all shadow-md flex justify-center items-center gap-2 disabled:opacity-70 text-sm mt-6 cursor-pointer"
       >
         {isLoading ? (
           <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />

@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { useToast } from '@/components/ui/toast';
 import { useNumberFormat } from '@/context/number-format-context';
-import { Users, Plus, Search, ShieldCheck, Phone, MapPin, Edit, Eye, Loader2, CheckCircle2 } from 'lucide-react';
+import { Users, Plus, Search, ShieldCheck, Phone, MapPin, Edit, Eye, EyeOff, Key, Loader2, CheckCircle2 } from 'lucide-react';
 
 export default function CustomersPage() {
   const { toast } = useToast();
@@ -15,6 +15,51 @@ export default function CustomersPage() {
   const [search, setSearch] = useState('');
   const [editCustomer, setEditCustomer] = useState<any>(null);
   const [formLoading, setFormLoading] = useState(false);
+
+  // Password reset state
+  const [newCustomerPassword, setNewCustomerPassword] = useState('');
+  const [showCustomerPassword, setShowCustomerPassword] = useState(false);
+  const [resetPasswordLoading, setResetPasswordLoading] = useState(false);
+
+  const handleResetCustomerPassword = async () => {
+    if (!editCustomer || !newCustomerPassword || newCustomerPassword.length < 6) {
+      toast({ title: 'تنبيه', description: 'كلمة المرور يجب أن تكون 6 خانات على الأقل', type: 'error' });
+      return;
+    }
+
+    setResetPasswordLoading(true);
+    try {
+      const res = await fetch('/api/admin/users/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: editCustomer.id,
+          newPassword: newCustomerPassword
+        })
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data.success) {
+        toast({
+          title: 'تم تحديث كلمة المرور بنجاح',
+          description: data.message || `تم تغيير كلمة المرور للمستخدم (${editCustomer.store_name || editCustomer.full_name})`,
+          type: 'success'
+        });
+        setNewCustomerPassword('');
+      } else {
+        toast({
+          title: 'خطأ في تحديث كلمة المرور',
+          description: data.error || 'فشل إعادة تعيين كلمة المرور',
+          type: 'error'
+        });
+      }
+    } catch (err: any) {
+      toast({ title: 'خطأ في الاتصال', description: err.message, type: 'error' });
+    } finally {
+      setResetPasswordLoading(false);
+    }
+  };
 
   useEffect(() => {
     fetchCustomers();
@@ -324,18 +369,64 @@ export default function CustomersPage() {
                 ></textarea>
               </div>
 
+              {/* Reset Password Section */}
+              <div className="pt-3 border-t border-slate-200 dark:border-slate-800 space-y-2">
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200">
+                  إعادة تعيين كلمة المرور للعميل
+                </label>
+                <div className="flex gap-2">
+                  <div className="relative flex-1">
+                    <input
+                      type={showCustomerPassword ? 'text' : 'password'}
+                      placeholder="كلمة المرور الجديدة (6 خانات+)"
+                      value={newCustomerPassword}
+                      onChange={e => setNewCustomerPassword(e.target.value)}
+                      className="w-full pr-3 pl-9 py-2 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-xl text-xs font-bold font-mono outline-none focus:border-amber-500"
+                      dir="ltr"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowCustomerPassword(!showCustomerPassword)}
+                      className="absolute left-2.5 top-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 focus:outline-none cursor-pointer"
+                      title={showCustomerPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+                    >
+                      {showCustomerPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={resetPasswordLoading || !newCustomerPassword || newCustomerPassword.length < 6}
+                    onClick={handleResetCustomerPassword}
+                    className="px-3 py-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-1 shrink-0 cursor-pointer"
+                  >
+                    {resetPasswordLoading ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Key className="w-3.5 h-3.5" />
+                    )}
+                    <span>تحديث كلمة المرور</span>
+                  </button>
+                </div>
+                <span className="text-[10px] text-slate-400 block">
+                  يمكن للمشرف تعيين كلمة مرور جديدة للتاجر وتزويده بها مباشرة
+                </span>
+              </div>
+
               <div className="pt-2 flex gap-2">
                 <button
                   type="submit"
                   disabled={formLoading}
-                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-xl font-bold shadow text-xs"
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-xl font-bold shadow text-xs cursor-pointer"
                 >
                   {formLoading ? 'جاري الحفظ...' : 'حفظ التعديلات'}
                 </button>
                 <button
                   type="button"
-                  onClick={() => setEditCustomer(null)}
-                  className="px-4 py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-bold rounded-xl border border-slate-200 dark:border-slate-700 text-xs"
+                  onClick={() => {
+                    setEditCustomer(null);
+                    setNewCustomerPassword('');
+                  }}
+                  className="px-4 py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-bold rounded-xl border border-slate-200 dark:border-slate-700 text-xs cursor-pointer"
                 >
                   إلغاء
                 </button>

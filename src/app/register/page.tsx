@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useToast } from '@/components/ui/toast';
-import { UserPlus, ArrowRight, Phone, Lock, Store, Mail, MapPin, CheckCircle2, AlertCircle } from 'lucide-react';
+import { UserPlus, ArrowRight, Phone, Lock, Store, Mail, MapPin, AlertCircle, Eye, EyeOff } from 'lucide-react';
 import { BRAND } from '@/lib/constants';
 
 export default function RegisterPage() {
@@ -14,6 +14,9 @@ export default function RegisterPage() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [address, setAddress] = useState('');
+  
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [serverError, setServerError] = useState<string>('');
@@ -26,7 +29,7 @@ export default function RegisterPage() {
     setServerError('');
 
     if (!fullName.trim()) {
-      newErrors.fullName = 'اسم العميل أو المتجر مطلوب';
+      newErrors.fullName = 'اسم العميل أو المنشأة مطلوب';
     }
 
     const cleanPhone = phone.trim().replace(/\D/g, '');
@@ -79,7 +82,7 @@ export default function RegisterPage() {
           store_name: fullName.trim(),
           phone: cleanPhone,
           email: cleanEmail,
-          password,
+          password: password.trim(),
           address: address.trim() || null,
         }),
       });
@@ -87,7 +90,10 @@ export default function RegisterPage() {
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        const errorMsg = data.error || 'حدث خطأ أثناء إنشاء الحساب';
+        let errorMsg = data.error || 'حدث خطأ أثناء إنشاء الحساب';
+        if (errorMsg.includes('مسجل بالفعل') || errorMsg.includes('already registered')) {
+          errorMsg = 'رقم الهاتف مسجل بالفعل، يرجى تسجيل الدخول';
+        }
         setServerError(errorMsg);
         throw new Error(errorMsg);
       }
@@ -162,7 +168,7 @@ export default function RegisterPage() {
               {errors.fullName && <p className="text-red-500 text-xs mt-1 font-bold">{errors.fullName}</p>}
             </div>
 
-            {/* Mobile Phone (Required - 11 digits) */}
+            {/* Mobile Phone (Required - 11 digits starting with 010, 011, 012, 015) */}
             <div>
               <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
                 رقم الهاتف المحمول (11 رقم) *
@@ -230,13 +236,13 @@ export default function RegisterPage() {
               {errors.email && <p className="text-red-500 text-xs mt-1 font-bold">{errors.email}</p>}
             </div>
 
-            {/* Passwords */}
+            {/* Passwords with Show/Hide Toggles */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">كلمة المرور *</label>
                 <div className="relative">
                   <input
-                    type="password"
+                    type={showPassword ? 'text' : 'password'}
                     required
                     value={password}
                     onChange={(e) => {
@@ -244,11 +250,19 @@ export default function RegisterPage() {
                       if (errors.password) setErrors(prev => ({ ...prev, password: '' }));
                       if (serverError) setServerError('');
                     }}
-                    className={`w-full pr-10 pl-4 py-2.5 rounded-xl border ${errors.password ? 'border-red-500' : 'border-slate-300 dark:border-slate-700'} bg-white dark:bg-slate-800 focus:border-brand-600 focus:ring-2 focus:ring-brand-500/20 text-slate-900 dark:text-white transition-all outline-none font-semibold text-sm`}
+                    className={`w-full pr-10 pl-10 py-2.5 rounded-xl border ${errors.password ? 'border-red-500' : 'border-slate-300 dark:border-slate-700'} bg-white dark:bg-slate-800 focus:border-brand-600 focus:ring-2 focus:ring-brand-500/20 text-slate-900 dark:text-white transition-all outline-none font-semibold text-sm`}
                     placeholder="••••••••"
                     dir="ltr"
                   />
                   <Lock className="w-4 h-4 text-slate-400 absolute right-3.5 top-3" />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute left-3 top-3 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 focus:outline-none transition-colors"
+                    title={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
                 {errors.password && <p className="text-red-500 text-xs mt-1 font-bold">{errors.password}</p>}
               </div>
@@ -257,7 +271,7 @@ export default function RegisterPage() {
                 <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">تأكيد كلمة المرور *</label>
                 <div className="relative">
                   <input
-                    type="password"
+                    type={showConfirmPassword ? 'text' : 'password'}
                     required
                     value={confirmPassword}
                     onChange={(e) => {
@@ -265,11 +279,19 @@ export default function RegisterPage() {
                       if (errors.confirmPassword) setErrors(prev => ({ ...prev, confirmPassword: '' }));
                       if (serverError) setServerError('');
                     }}
-                    className={`w-full pr-10 pl-4 py-2.5 rounded-xl border ${errors.confirmPassword ? 'border-red-500' : 'border-slate-300 dark:border-slate-700'} bg-white dark:bg-slate-800 focus:border-brand-600 focus:ring-2 focus:ring-brand-500/20 text-slate-900 dark:text-white transition-all outline-none font-semibold text-sm`}
+                    className={`w-full pr-10 pl-10 py-2.5 rounded-xl border ${errors.confirmPassword ? 'border-red-500' : 'border-slate-300 dark:border-slate-700'} bg-white dark:bg-slate-800 focus:border-brand-600 focus:ring-2 focus:ring-brand-500/20 text-slate-900 dark:text-white transition-all outline-none font-semibold text-sm`}
                     placeholder="••••••••"
                     dir="ltr"
                   />
                   <Lock className="w-4 h-4 text-slate-400 absolute right-3.5 top-3" />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                    className="absolute left-3 top-3 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 focus:outline-none transition-colors"
+                    title={showConfirmPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+                  >
+                    {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
                 {errors.confirmPassword && <p className="text-red-500 text-xs mt-1 font-bold">{errors.confirmPassword}</p>}
               </div>
@@ -278,7 +300,7 @@ export default function RegisterPage() {
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full btn-primary font-bold py-3.5 px-4 rounded-xl transition-all shadow-md flex justify-center items-center gap-2 disabled:opacity-70 text-sm mt-6"
+              className="w-full btn-primary font-bold py-3.5 px-4 rounded-xl transition-all shadow-md flex justify-center items-center gap-2 disabled:opacity-70 text-sm mt-6 cursor-pointer"
             >
               {isLoading ? (
                 <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />

@@ -170,11 +170,51 @@ export async function PATCH(
       }
     }
 
+    // Arabic translation map for order status
+    const statusArabicMap: Record<string, string> = {
+      pending: 'قيد الانتظار',
+      processing: 'تمت الموافقة والتجهيز',
+      approved: 'تمت الموافقة والتجهيز',
+      out_for_delivery: 'جاري التوصيل',
+      shipping: 'جاري التوصيل',
+      completed: 'مكتمل ومستلم',
+      cancelled: 'ملغي',
+      modified_by_owner: 'تم التعديل',
+      returned: 'مرتجع',
+    };
+
+    const statusArabic = statusArabicMap[status] || status;
+
+    // Fetch real customer name from order or profile
+    let customerRealName = 
+      order.customer?.full_name || 
+      order.customer?.store_name || 
+      order.store_name_ref || 
+      order.customer_name || 
+      '';
+
+    if (!customerRealName && order.customer_id) {
+      const { data: prof } = await adminClient.from('profiles').select('full_name, store_name').eq('id', order.customer_id).maybeSingle();
+      if (prof) {
+        customerRealName = prof.full_name || prof.store_name || '';
+      }
+    }
+
+    if (!customerRealName) {
+      customerRealName = 'عميل المتجر';
+    }
+
+    const rawInvoiceNo = order.invoice_no || order.order_number || targetOrderId;
+    const cleanInvoiceNo = String(rawInvoiceNo).replace(/^#+/, '');
+    const formattedInvoiceNo = cleanInvoiceNo.startsWith('INV-') 
+      ? `#${cleanInvoiceNo}` 
+      : `#INV-${cleanInvoiceNo.padStart(6, '0')}`;
+
     // Log the order status change in audit_logs
     await logAction({
       actionType: 'تحديث حالة طلب',
       category: 'المبيعات والفواتير',
-      details: `تم تغيير حالة الفاتورة/الطلب (${order.invoice_no || order.order_number || targetOrderId}) للعميل (${order.customer?.full_name || order.customer?.store_name || order.customer_id}) إلى حالة (${status})`
+      details: `تم تغيير حالة الفاتورة/الطلب (${formattedInvoiceNo}) للعميل (${customerRealName}) إلى حالة (${statusArabic})`
     });
 
     return NextResponse.json({ 
