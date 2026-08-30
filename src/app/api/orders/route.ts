@@ -151,7 +151,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // 1. Strict Server-Side Validation: Validate stock constraints & paused status
+    // 1. Validate requested quantity against stock limit and check if product is paused (NO stock reduction)
     const aggregatedQty = new Map<string, number>();
     for (const item of items) {
       const pId = item.product_id || item.product?.id || item.id;
@@ -263,7 +263,6 @@ export async function POST(req: NextRequest) {
 
     // Pure sequential numeric invoice/order number starting from 10000
     const nextInvoiceNumber = await getNextInvoiceNumber(adminClient, supabase);
-    const finalCustomerCode = customer_code || customerProfile?.customer_code || '1000';
 
     const baseOrderPayload: any = {
       order_number: nextInvoiceNumber,
@@ -310,12 +309,11 @@ export async function POST(req: NextRequest) {
     order = res1.data;
     orderError = res1.error;
 
-    // Attempt 2: If failed with trigger or column issue (e.g. invoice_number vs invoice_no)
+    // Attempt 2: If failed with trigger or column issue
     if (orderError || !order) {
       console.warn('Attempt 1 order insert error:', orderError?.message);
       
       const payload2: any = { ...baseOrderPayload };
-      // Try adding or swapping invoice_number
       payload2.invoice_number = nextInvoiceNumber;
       
       const res2 = await adminClient.from('orders').insert([payload2]).select().maybeSingle();
@@ -325,7 +323,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Attempt 3: Core minimal columns only (guaranteed default schema)
+    // Attempt 3: Core minimal columns only
     if (orderError || !order) {
       console.warn('Attempt 2 failed, trying core minimal payload...');
       const corePayload: any = {
@@ -364,7 +362,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: orderError?.message || 'فشل إرسال الطلب' }, { status: 400 });
     }
 
-    // Insert order items without deducting stock (stock is only deducted on status -> 'completed')
+    // Insert order items without deducting stock (stock is ONLY deducted when order status is changed to 'completed')
     if (orderItemsToInsert.length > 0) {
       const formattedOrderItems = orderItemsToInsert.map(oi => ({
         id: crypto.randomUUID(),

@@ -55,7 +55,7 @@ export async function PATCH(
 
     const targetOrderId = order.id;
     
-    // 1. Stock Deduction Safeguard via Atomic PostgreSQL RPC Function
+    // 1. Stock Deduction Safeguard Logic
     const isCurrentlyDeducted = Boolean(order.stock_deducted);
     const isNowCompleted = status === 'completed';
     const isCancelledOrReturned = status === 'cancelled' || status === 'returned';
@@ -63,7 +63,8 @@ export async function PATCH(
     let willBeDeducted = isCurrentlyDeducted;
 
     // A. When status becomes 'completed':
-    // Execute atomic PostgreSQL RPC function complete_order_and_deduct_stock
+    // If stock_deducted === true in DB, skip deduction immediately.
+    // If stock_deducted === false, deduct exact item quantities once (1:1), then set stock_deducted = true.
     if (isNowCompleted && !isCurrentlyDeducted) {
       try {
         const { data: rpcRes, error: rpcErr } = await adminClient.rpc('complete_order_and_deduct_stock', {
@@ -73,7 +74,7 @@ export async function PATCH(
         if (!rpcErr && rpcRes && rpcRes.success) {
           willBeDeducted = true;
         } else {
-          // Fallback if RPC function not created in database instance yet
+          // Fallback 1:1 JS deduction if RPC function is not created in DB instance yet
           if (Array.isArray(order.order_items) && order.order_items.length > 0) {
             const qtyByProduct = new Map<string, number>();
             for (const item of order.order_items) {
@@ -110,7 +111,7 @@ export async function PATCH(
     }
 
     // B. When order is cancelled or returned after being completed:
-    // Execute atomic PostgreSQL RPC function restore_order_stock
+    // If stock_deducted === true, restore quantities once (+ item.quantity), then set stock_deducted = false.
     if ((isCancelledOrReturned || (!isNowCompleted && isCurrentlyDeducted)) && isCurrentlyDeducted) {
       try {
         const { data: rpcRes, error: rpcErr } = await adminClient.rpc('restore_order_stock', {
@@ -169,7 +170,7 @@ export async function PATCH(
       .select('*, order_items(*, product:products(*)), customer:profiles(*)')
       .maybeSingle();
 
-    // Fallback if stock_deducted column not in table schema
+    // Fallback if stock_deducted column is missing in table schema
     if (updateError && updateError.message.includes('stock_deducted')) {
       delete orderUpdatePayload.stock_deducted;
       const retry = await adminClient
