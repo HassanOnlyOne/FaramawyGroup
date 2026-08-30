@@ -54,48 +54,57 @@ export async function PATCH(
     }
 
     const targetOrderId = order.id;
-    const currentStatus = order.status;
     
-    // Check if stock has ALREADY been deducted for this order
-    const isCurrentlyDeducted = order.stock_deducted === true;
+    // 1. Stock Deduction Safeguard Check
+    const isCurrentlyDeducted = Boolean(order.stock_deducted);
     const isNowCompleted = status === 'completed';
+    const isCancelledOrReturned = status === 'cancelled' || status === 'returned';
+
     let willBeDeducted = isCurrentlyDeducted;
 
-    // 1. When status becomes 'completed':
-    // If order.stock_deducted === true: bypass deduction completely to prevent double deduction.
-    // If order.stock_deducted === false (or null): deduct actual items and set stock_deducted = true.
-    if (isNowCompleted) {
-      if (!isCurrentlyDeducted) {
-        if (Array.isArray(order.order_items)) {
-          const qtyByProduct = new Map<string, number>();
-          for (const item of order.order_items) {
-            const prodId = item.product_id || item.product?.id || item.id;
-            const qty = Number(item.quantity || 0);
-            if (prodId && qty > 0) {
-              qtyByProduct.set(prodId, (qtyByProduct.get(prodId) || 0) + qty);
-            }
-          }
-
-          for (const [prodId, totalQty] of qtyByProduct.entries()) {
-            const { data: product } = await adminClient.from('products').select('stock_quantity').eq('id', prodId).maybeSingle();
-            if (product) {
-              const currentStock = Number(product.stock_quantity || 0);
-              const newStock = Math.max(0, currentStock - totalQty);
-              await adminClient.from('products').update({ stock_quantity: newStock, updated_at: new Date().toISOString() }).eq('id', prodId);
-            }
-          }
-        }
-        willBeDeducted = true;
-      }
-    }
-
-    // 2. When cancelling or returning an order that was completed (or stock_deducted === true):
-    // Restore item quantities to stock and set stock_deducted = false.
-    if (!isNowCompleted && isCurrentlyDeducted) {
-      if (Array.isArray(order.order_items)) {
+    // A. When status becomes 'completed':
+    // If order.stock_deducted === true: bypass stock deduction completely (0 double deduction).
+    // If order.stock_deducted === false (or null): deduct stock ONCE and set stock_deducted = true.
+    if (isNowCompleted && !isCurrentlyDeducted) {
+      if (Array.isArray(order.order_items) && order.order_items.length > 0) {
+        // Aggregate quantities per product ID strictly
         const qtyByProduct = new Map<string, number>();
         for (const item of order.order_items) {
-          const prodId = item.product_id || item.product?.id || item.id;
+          const prodId = item.product_id || item.product?.id;
+          const qty = Number(item.quantity || 0);
+          if (prodId && qty > 0) {
+            qtyByProduct.set(prodId, (qtyByProduct.get(prodId) || 0) + qty);
+          }
+        }
+
+        // Deduct exact quantity ONCE per product
+        for (const [prodId, totalQty] of qtyByProduct.entries()) {
+          const { data: product } = await adminClient
+            .from('products')
+            .select('stock_quantity')
+            .eq('id', prodId)
+            .maybeSingle();
+
+          if (product) {
+            const currentStock = Number(product.stock_quantity || 0);
+            const newStock = Math.max(0, currentStock - totalQty);
+            await adminClient
+              .from('products')
+              .update({ stock_quantity: newStock, updated_at: new Date().toISOString() })
+              .eq('id', prodId);
+          }
+        }
+      }
+      willBeDeducted = true;
+    }
+
+    // B. When order is cancelled or returned after being completed (or when stock_deducted === true):
+    // Restore exact stock quantities and set stock_deducted = false.
+    if ((isCancelledOrReturned || (!isNowCompleted && isCurrentlyDeducted)) && isCurrentlyDeducted) {
+      if (Array.isArray(order.order_items) && order.order_items.length > 0) {
+        const qtyByProduct = new Map<string, number>();
+        for (const item of order.order_items) {
+          const prodId = item.product_id || item.product?.id;
           const qty = Number(item.quantity || 0);
           if (prodId && qty > 0) {
             qtyByProduct.set(prodId, (qtyByProduct.get(prodId) || 0) + qty);
@@ -103,18 +112,26 @@ export async function PATCH(
         }
 
         for (const [prodId, totalQty] of qtyByProduct.entries()) {
-          const { data: product } = await adminClient.from('products').select('stock_quantity').eq('id', prodId).maybeSingle();
+          const { data: product } = await adminClient
+            .from('products')
+            .select('stock_quantity')
+            .eq('id', prodId)
+            .maybeSingle();
+
           if (product) {
             const currentStock = Number(product.stock_quantity || 0);
             const newStock = currentStock + totalQty;
-            await adminClient.from('products').update({ stock_quantity: newStock, updated_at: new Date().toISOString() }).eq('id', prodId);
+            await adminClient
+              .from('products')
+              .update({ stock_quantity: newStock, updated_at: new Date().toISOString() })
+              .eq('id', prodId);
           }
         }
       }
       willBeDeducted = false;
     }
 
-    // Update status and stock_deducted flag in database using exact order.id
+    // Update order status AND stock_deducted in database
     const orderUpdatePayload: any = { 
       status, 
       stock_deducted: willBeDeducted,
@@ -144,11 +161,11 @@ export async function PATCH(
     if (updateError || !updatedOrder) {
       const { data: fbUpdated } = await supabase
         .from('orders')
-        .update({ status, updated_at: new Date().toISOString() })
+        .update(orderUpdatePayload)
         .eq('id', targetOrderId)
         .select('*, order_items(*, product:products(*)), customer:profiles(*)')
         .maybeSingle();
-      updatedOrder = fbUpdated || { ...order, status };
+      updatedOrder = fbUpdated || { ...order, status, stock_deducted: willBeDeducted };
     }
 
     // Recalculate customer debt automatically

@@ -5,7 +5,30 @@ import { useRouter } from 'next/navigation';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { useToast } from '@/components/ui/toast';
 import { useNumberFormat } from '@/context/number-format-context';
-import { ShieldCheck, ShieldAlert, KeyRound, Users, Check, X, Lock, Save, Loader2, RefreshCw, UserPlus, Mail, Phone, LockKeyhole, Eye, EyeOff, Key, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { 
+  ShieldCheck, 
+  ShieldAlert, 
+  KeyRound, 
+  Users, 
+  Check, 
+  X, 
+  Lock, 
+  Save, 
+  Loader2, 
+  RefreshCw, 
+  UserPlus, 
+  Mail, 
+  Phone, 
+  LockKeyhole, 
+  Eye, 
+  EyeOff, 
+  Key, 
+  AlertCircle, 
+  AlertTriangle,
+  CheckCircle2,
+  Calendar,
+  Clock
+} from 'lucide-react';
 
 const PERMISSION_KEYS = [
   { key: 'orders', label: 'الوصول للطلبات والمبيعات' },
@@ -27,6 +50,7 @@ export default function UsersPermissionsPage() {
 
   // Pending Password Reset Requests
   const [pendingResets, setPendingResets] = useState<any[]>([]);
+  const [selectedResetModal, setSelectedResetModal] = useState<{ user: any; request: any } | null>(null);
 
   // New User Modal State
   const [showAddModal, setShowAddModal] = useState(false);
@@ -93,28 +117,48 @@ export default function UsersPermissionsPage() {
     }
   }
 
-  const handleResolveResetRequest = async (requestItem: any) => {
+  // Find if a specific user has a pending password reset request
+  const getPendingResetForUser = (user: any) => {
+    if (!pendingResets || pendingResets.length === 0) return null;
+    const cleanPhone = String(user.phone || '').replace(/\D/g, '');
+    const userEmail = String(user.email || '').toLowerCase().trim();
+
+    return pendingResets.find(r => {
+      const reqTarget = String(r.phone_or_email || '').toLowerCase().trim();
+      const cleanReq = reqTarget.replace(/\D/g, '');
+      
+      return (
+        (cleanReq && cleanPhone && cleanPhone.includes(cleanReq)) ||
+        (userEmail && reqTarget && userEmail === reqTarget)
+      );
+    });
+  };
+
+  const handleResolveResetRequest = async (requestItem: any, targetUser?: any) => {
     try {
+      const targetName = targetUser?.full_name || targetUser?.store_name || requestItem.phone_or_email;
+
       await fetch('/api/admin/password-resets', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           id: requestItem.id,
-          phone_or_email: requestItem.phone_or_email
+          phone_or_email: requestItem.phone_or_email,
+          customer_name: targetName
         })
       });
 
       toast({
-        title: 'تم تحديث الحالة',
-        description: `تم وسم طلب (${requestItem.phone_or_email}) كـ تم الحل`,
+        title: 'تم تحديث حالة الطلب',
+        description: `تم وسم طلب (${requestItem.phone_or_email}) كـ تم الحل وتحديث الباسورد`,
         type: 'success'
       });
 
       // Remove from local banner state
       setPendingResets(prev => prev.filter(r => r.id !== requestItem.id && r.phone_or_email !== requestItem.phone_or_email));
 
-      // Check if user exists in users array and trigger reset password modal
-      const matchedUser = users.find(u => 
+      // Open reset password modal if user matched
+      const matchedUser = targetUser || users.find(u => 
         (u.phone && u.phone.includes(requestItem.phone_or_email)) ||
         (u.email && u.email.toLowerCase() === requestItem.phone_or_email.toLowerCase())
       );
@@ -125,6 +169,59 @@ export default function UsersPermissionsPage() {
       }
     } catch (err: any) {
       toast({ title: 'خطأ', description: err.message, type: 'error' });
+    }
+  };
+
+  const handleCompleteResolveModal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedResetModal) return;
+
+    const { user, request } = selectedResetModal;
+    setResettingPassword(true);
+
+    try {
+      // 1. Update Password if entered
+      if (newPassword && newPassword.trim().length >= 6) {
+        const passRes = await fetch('/api/admin/users/reset-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: user.id,
+            newPassword: newPassword.trim()
+          })
+        });
+        const passData = await passRes.json().catch(() => ({}));
+        if (!passRes.ok || !passData.success) {
+          throw new Error(passData.error || 'فشل تحديث كلمة المرور');
+        }
+      }
+
+      // 2. Mark request as resolved
+      await fetch('/api/admin/password-resets', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: request.id,
+          phone_or_email: request.phone_or_email,
+          customer_name: user.full_name || user.store_name || request.phone_or_email
+        })
+      });
+
+      // 3. Update local state
+      setPendingResets(prev => prev.filter(r => r.id !== request.id && r.phone_or_email !== request.phone_or_email));
+
+      toast({
+        title: 'تم الحل بنجاح',
+        description: `تم حسم وحل طلب استرجاع كلمة المرور للعميل (${user.full_name || user.store_name}) وإخفاء التنبيه`,
+        type: 'success'
+      });
+
+      setSelectedResetModal(null);
+      setNewPassword('');
+    } catch (err: any) {
+      toast({ title: 'خطأ', description: err.message, type: 'error' });
+    } finally {
+      setResettingPassword(false);
     }
   };
 
@@ -336,11 +433,27 @@ export default function UsersPermissionsPage() {
 
   const renderUserRow = (user: any) => {
     const isLocked = user.is_locked;
+    const pendingReset = getPendingResetForUser(user);
 
     return (
-      <tr key={user.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
+      <tr 
+        key={user.id} 
+        className={`transition-colors ${
+          pendingReset 
+            ? 'bg-rose-500/10 dark:bg-rose-950/40 border-2 border-rose-500/30' 
+            : 'hover:bg-slate-50 dark:hover:bg-slate-800/40'
+        }`}
+      >
         <td className="p-4 whitespace-nowrap">
-          <div className="font-black text-slate-900 dark:text-white text-sm">{user.full_name || user.store_name}</div>
+          <div className="flex items-center gap-2">
+            <div className="font-black text-slate-900 dark:text-white text-sm">{user.full_name || user.store_name}</div>
+            {pendingReset && (
+              <span className="px-2 py-0.5 bg-rose-600 text-white rounded-md font-bold text-[10px] animate-pulse flex items-center gap-1">
+                <AlertTriangle className="w-3 h-3" />
+                طلب استرجاع معلق
+              </span>
+            )}
+          </div>
           <div className="text-xs text-slate-500 dark:text-slate-400 font-mono">{user.email}</div>
           {user.phone && user.phone !== '---' && (
             <div className="text-[11px] text-slate-400 font-mono mt-0.5">{formatNumber(user.phone)}</div>
@@ -416,22 +529,38 @@ export default function UsersPermissionsPage() {
         </td>
 
         <td className="p-4 whitespace-nowrap text-center">
-          <button
-            onClick={() => handleSaveUser(user)}
-            disabled={savingId === user.id || isLocked}
-            className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold shadow-sm transition-all cursor-pointer ${
-              isLocked 
-                ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed border border-slate-200 dark:border-slate-700' 
-                : 'btn-primary'
-            }`}
-          >
-            {savingId === user.id ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Save className="w-4 h-4" />
-            )}
-            <span>حفظ التعديلات</span>
-          </button>
+          <div className="flex items-center justify-center gap-2">
+            {pendingReset ? (
+              <button
+                onClick={() => {
+                  setSelectedResetModal({ user, request: pendingReset });
+                  setNewPassword('');
+                }}
+                className="px-3 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold text-xs flex items-center gap-1.5 shadow-md animate-pulse cursor-pointer shrink-0"
+                title="فتح تفاصيل طلب الاسترجاع وحل المشكلة"
+              >
+                <AlertTriangle className="w-4 h-4 text-yellow-300 shrink-0" />
+                <span>⚠️ التفاصيل والحل</span>
+              </button>
+            ) : null}
+
+            <button
+              onClick={() => handleSaveUser(user)}
+              disabled={savingId === user.id || isLocked}
+              className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold shadow-sm transition-all cursor-pointer ${
+                isLocked 
+                  ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 cursor-not-allowed border border-slate-200 dark:border-slate-700' 
+                  : 'btn-primary'
+              }`}
+            >
+              {savingId === user.id ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Save className="w-4 h-4" />
+              )}
+              <span>حفظ التعديلات</span>
+            </button>
+          </div>
         </td>
       </tr>
     );
@@ -479,20 +608,35 @@ export default function UsersPermissionsPage() {
               </div>
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-              {pendingResets.map(req => (
-                <div key={req.id || req.phone_or_email} className="bg-white dark:bg-slate-900 p-3 rounded-2xl border border-rose-200 dark:border-rose-800 flex items-center justify-between gap-2 shadow-sm">
-                  <div>
-                    <span className="font-mono font-bold text-xs text-slate-900 dark:text-white block">{req.phone_or_email}</span>
-                    <span className="text-[10px] text-slate-400 block">طلب استرجاع معلق</span>
+              {pendingResets.map(req => {
+                const matchedUser = users.find(u => 
+                  (u.phone && u.phone.includes(req.phone_or_email)) ||
+                  (u.email && u.email.toLowerCase() === req.phone_or_email.toLowerCase())
+                );
+
+                return (
+                  <div key={req.id || req.phone_or_email} className="bg-white dark:bg-slate-900 p-3 rounded-2xl border border-rose-200 dark:border-rose-800 flex items-center justify-between gap-2 shadow-sm">
+                    <div>
+                      <span className="font-mono font-bold text-xs text-slate-900 dark:text-white block">{req.phone_or_email}</span>
+                      {matchedUser && <span className="text-[10px] text-rose-600 dark:text-rose-400 font-bold block">{matchedUser.full_name || matchedUser.store_name}</span>}
+                    </div>
+                    <button
+                      onClick={() => {
+                        if (matchedUser) {
+                          setSelectedResetModal({ user: matchedUser, request: req });
+                          setNewPassword('');
+                        } else {
+                          handleResolveResetRequest(req);
+                        }
+                      }}
+                      className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer shrink-0 shadow-sm flex items-center gap-1"
+                    >
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      <span>التفاصيل والحل</span>
+                    </button>
                   </div>
-                  <button
-                    onClick={() => handleResolveResetRequest(req)}
-                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-colors cursor-pointer shrink-0 shadow-sm"
-                  >
-                    تم الحل / تعيين باسورد
-                  </button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
@@ -573,7 +717,7 @@ export default function UsersPermissionsPage() {
                     {/* VISUAL SEPARATOR */}
                     <tr className="bg-slate-200/50 dark:bg-slate-800/50">
                       <td colSpan={4} className="p-0">
-                        <div className="border-b-2 border-slate-300 dark:border-slate-700 my-2" />
+                        <div className="border-b-2 border-slate-700 my-4" />
                       </td>
                     </tr>
 
@@ -598,8 +742,109 @@ export default function UsersPermissionsPage() {
         </div>
       </div>
 
-      {/* Reset Password Modal */}
-      {resetUser && (
+      {/* Resolve Password Reset Request Modal */}
+      {selectedResetModal && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-xl w-full max-w-md overflow-hidden border border-rose-300 dark:border-rose-800 animate-scale-in">
+            <div className="p-4 border-b border-rose-200 dark:border-rose-800 flex justify-between items-center bg-rose-50 dark:bg-rose-950/60">
+              <h3 className="font-bold text-base text-rose-900 dark:text-rose-200 flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-rose-600 dark:text-rose-400" />
+                <span>تفاصيل طلب استرجاع كلمة المرور وحلها</span>
+              </h3>
+              <button
+                onClick={() => setSelectedResetModal(null)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-white text-2xl font-bold cursor-pointer"
+              >
+                &times;
+              </button>
+            </div>
+
+            <form onSubmit={handleCompleteResolveModal} className="p-5 space-y-4">
+              {/* Customer Details Box */}
+              <div className="bg-slate-50 dark:bg-slate-800/80 p-4 rounded-2xl border border-slate-200 dark:border-slate-700 space-y-2 text-xs">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400 font-bold">اسم العميل / المنشأة:</span>
+                  <span className="font-bold text-slate-900 dark:text-white">{selectedResetModal.user.full_name || selectedResetModal.user.store_name}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400 font-bold">رقم الهاتف المسجل:</span>
+                  <span className="font-mono font-bold text-slate-900 dark:text-white" dir="ltr">{selectedResetModal.user.phone || 'غير مسجل'}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400 font-bold">البريد الإلكتروني:</span>
+                  <span className="font-mono text-slate-700 dark:text-slate-300">{selectedResetModal.user.email}</span>
+                </div>
+                <div className="flex justify-between items-center pt-1 border-t border-slate-200 dark:border-slate-700">
+                  <span className="text-slate-400 font-bold flex items-center gap-1">
+                    <Clock className="w-3.5 h-3.5 text-rose-500" />
+                    وقت وتاريخ إرسال الطلب:
+                  </span>
+                  <span className="font-bold text-rose-600 dark:text-rose-400">
+                    {selectedResetModal.request.created_at ? new Date(selectedResetModal.request.created_at).toLocaleString('ar-EG') : 'الآن'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Password Input */}
+              <div>
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
+                  تعيين كلمة مرور جديدة للعميل (اختياري)
+                </label>
+                <div className="relative">
+                  <input
+                    type={showResetPassword ? 'text' : 'password'}
+                    minLength={6}
+                    value={newPassword}
+                    onChange={e => setNewPassword(e.target.value)}
+                    placeholder="أدخل الباسورد الجديد (أو اتركه خالياً لحسم الطلب)"
+                    className="w-full pr-4 pl-10 py-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-xl text-xs font-bold font-mono outline-none focus:border-emerald-500"
+                    dir="ltr"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowResetPassword(!showResetPassword)}
+                    className="absolute left-3 top-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 focus:outline-none cursor-pointer"
+                    title={showResetPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+                  >
+                    {showResetPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <span className="text-[10px] text-slate-400 mt-1 block">
+                  عند النقر على الأزرار أدناه، سيتم تحديث كلمة المرور وحسم الطلب وإخفاء التنبيه تماماً.
+                </span>
+              </div>
+
+              {/* Resolve Button */}
+              <div className="pt-2 space-y-2">
+                <button
+                  type="submit"
+                  disabled={resettingPassword}
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  {resettingPassword ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>✓ تم الحل وتعيين كلمة المرور</span>
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedResetModal(null)}
+                  className="w-full py-2 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold rounded-xl text-xs hover:bg-slate-200 transition-colors cursor-pointer"
+                >
+                  إلغاء النافذة
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Quick Password Reset Modal */}
+      {resetUser && !selectedResetModal && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-xl w-full max-w-md overflow-hidden border border-slate-300 dark:border-slate-800 animate-scale-in">
             <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-amber-50 dark:bg-amber-950/40">

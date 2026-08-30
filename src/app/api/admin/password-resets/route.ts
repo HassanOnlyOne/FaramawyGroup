@@ -148,6 +148,15 @@ export async function PATCH(req: NextRequest) {
       return r;
     });
 
+    const targetCustomer = body.customer_name || body.userName || phoneOrEmail || 'العميل';
+
+    // Log action to audit_logs
+    await logAction({
+      actionType: 'حل طلب استرجاع كلمة مرور',
+      category: 'الأمان والصلاحيات',
+      details: `قام المشرف بحل طلب استرجاع كلمة المرور للعميل (${targetCustomer})`
+    });
+
     return NextResponse.json({
       success: true,
       message: 'تم تحديث حالة الطلب إلى تم الحل بنجاح'
