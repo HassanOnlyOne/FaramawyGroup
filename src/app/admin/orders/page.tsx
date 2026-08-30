@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { OrderStatus } from '@/lib/types';
-import { Search, Eye, Filter, Trash2 } from 'lucide-react';
+import { Search, Eye, Filter, Trash2, Loader2 } from 'lucide-react';
 import { useNumberFormat } from '@/context/number-format-context';
 import { useToast } from '@/components/ui/toast';
 
@@ -25,6 +25,7 @@ export default function AdminOrdersPage() {
   const [orders, setOrders] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -39,6 +40,31 @@ export default function AdminOrdersPage() {
       setOrders([]);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleStatusUpdate = async (orderId: string, newStatus: string) => {
+    if (updatingStatusId === orderId) return; // Prevent double-trigger
+    setUpdatingStatusId(orderId);
+    try {
+      const res = await fetch(`/api/admin/orders/${orderId}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus })
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data.success !== false) {
+        toast({ title: 'تم تحديث حالة الطلب والمخزون بنجاح', type: 'success' });
+        setOrders(prev => prev.map(o => o.id === orderId ? { ...o, status: newStatus, stock_deducted: newStatus === 'completed' ? true : (['cancelled', 'returned'].includes(newStatus) ? false : o.stock_deducted) } : o));
+      } else {
+        toast({ title: 'خطأ في تحديث الحالة', description: data.error || 'فشل تحديث الحالة', type: 'error' });
+      }
+    } catch (err: any) {
+      toast({ title: 'خطأ في الاتصال بالسيرفر', description: err.message, type: 'error' });
+    } finally {
+      setUpdatingStatusId(null);
     }
   };
 
@@ -146,13 +172,14 @@ export default function AdminOrdersPage() {
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                 {isLoading ? (
-                  <tr><td colSpan={7} className="text-center py-10 text-slate-500 dark:text-slate-400">جاري التحميل...</td></tr>
+                  <tr><td colSpan={7} className="text-center py-10 text-slate-500 dark:text-slate-400 font-medium">جاري التحميل...</td></tr>
                 ) : filteredOrders.length === 0 ? (
                   <tr><td colSpan={7} className="text-center py-10 text-slate-500 dark:text-slate-400 font-medium">لا توجد طلبات تطابق الفلتر</td></tr>
                 ) : filteredOrders.map((order) => {
                   const invRaw = order.invoice_no || order.order_number || String(order.id);
                   const invClean = String(invRaw).replace(/\D/g, '') || String(order.id).slice(0, 8);
                   const totalVal = Number(order.total !== undefined && order.total !== null ? order.total : (order.total_amount || 0));
+                  const isUpdatingThis = updatingStatusId === order.id;
 
                   return (
                     <tr key={order.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
@@ -190,14 +217,24 @@ export default function AdminOrdersPage() {
                         {formatPriceShort(totalVal)}
                       </td>
                       <td className="px-5 py-4">
-                        {(() => {
-                          const cfg = STATUS_CONFIG[order.status] || { label: order.status || 'قيد الانتظار', bg: 'bg-slate-100 dark:bg-slate-800', text: 'text-slate-800 dark:text-slate-200' };
-                          return (
-                            <span className={`px-3 py-1 rounded-full text-xs font-bold ${cfg.bg} ${cfg.text}`}>
-                              {cfg.label}
-                            </span>
-                          );
-                        })()}
+                        <div className="flex items-center gap-1.5">
+                          <select
+                            value={order.status || 'pending'}
+                            onChange={(e) => handleStatusUpdate(order.id, e.target.value)}
+                            disabled={isUpdatingThis}
+                            className="px-2.5 py-1.5 rounded-xl text-xs font-bold border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:border-brand-500 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer shadow-sm"
+                          >
+                            <option value="pending">قيد الانتظار</option>
+                            <option value="approved">تمت الموافقة</option>
+                            <option value="out_for_delivery">جاري التوصيل</option>
+                            <option value="completed">مكتمل</option>
+                            <option value="returned">مرتجع</option>
+                            <option value="cancelled">ملغي</option>
+                          </select>
+                          {isUpdatingThis && (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-brand-600 dark:text-emerald-400 shrink-0" />
+                          )}
+                        </div>
                       </td>
                       <td className="px-5 py-4 text-center">
                         <div className="flex items-center justify-center gap-2">
@@ -210,7 +247,7 @@ export default function AdminOrdersPage() {
                             <button
                               onClick={() => handleDeleteOrder(order.id, invClean)}
                               disabled={deletingId === order.id}
-                              className="inline-flex items-center gap-1 bg-red-50 hover:bg-red-100 dark:bg-red-950/60 dark:hover:bg-red-900/60 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800 px-2.5 py-1.5 rounded-xl text-xs font-bold transition-colors shadow-sm disabled:opacity-50"
+                              className="inline-flex items-center gap-1 bg-red-50 hover:bg-red-100 dark:bg-red-950/60 dark:hover:bg-red-900/60 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800 px-2.5 py-1.5 rounded-xl text-xs font-bold transition-colors shadow-sm disabled:opacity-50 cursor-pointer"
                               title="حذف الطلب نهائياً"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
