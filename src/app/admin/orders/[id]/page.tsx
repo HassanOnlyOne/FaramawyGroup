@@ -4,10 +4,8 @@ import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { ElfarmawyInvoice } from '@/components/admin/invoice';
-import { formatPriceShort, ORDER_STATUS_LABELS } from '@/lib/constants';
-import { Printer, ArrowRight, Loader2, Edit, Plus, Trash2 } from 'lucide-react';
+import { Printer, ArrowRight, Loader2, Edit, Trash2 } from 'lucide-react';
 import { useToast } from '@/components/ui/toast';
-import { createClient } from '@/lib/supabase/client';
 import { useNumberFormat } from '@/context/number-format-context';
 import { recordAuditLog } from '@/lib/audit-client';
 import Link from 'next/link';
@@ -78,8 +76,8 @@ export default function AdminOrderDetail() {
         total_price: Number(it.total_price || ((it.quantity || 1) * (it.unit_price || it.product?.base_price || 0))),
         wholesale_unit: it.product?.wholesale_unit || it.product?.unit || 'عبوة'
       })));
-      setEditableShippingFee(Number(order.delivery_fee || order.shipping_fee || 0));
-      setEditableDiscount(Number(order.discount || 0));
+      setEditableShippingFee(Number(order.delivery_fee || order.shipping_fee || order.shipping_cost || 0));
+      setEditableDiscount(Number(order.discount || order.discount_amount || 0));
       setEditablePaidAmount(Number(order.paid_amount || 0));
     }
   }, [order]);
@@ -121,10 +119,7 @@ export default function AdminOrderDetail() {
   }
 
   const handleStatusChange = async (newStatus: string) => {
-    setStatus(newStatus);
-    if (order) {
-      setOrder((prev: any) => prev ? ({ ...prev, status: newStatus }) : null);
-    }
+    if (updating || newStatus === status) return;
     setUpdating(true);
     try {
       const res = await fetch(`/api/admin/orders/${id}/status`, {
@@ -136,13 +131,14 @@ export default function AdminOrderDetail() {
       const data = await res.json().catch(() => ({}));
 
       if (res.ok && data.success !== false) {
-        toast({ title: 'تم تحديث حالة الطلب بنجاح', type: 'success' });
+        toast({ title: 'تم تحديث حالة الطلب والمخزون بنجاح', type: 'success' });
+        setStatus(newStatus);
         const updated = data.data || data.order;
         if (updated) {
           setOrder(updated);
-          setStatus(updated.status || newStatus);
+        } else {
+          setOrder((prev: any) => prev ? ({ ...prev, status: newStatus }) : null);
         }
-        await fetchOrder(false);
       } else {
         toast({ title: 'خطأ في التحديث', description: data.error || 'فشل تعديل الحالة', type: 'error' });
       }
@@ -216,60 +212,8 @@ export default function AdminOrderDetail() {
   const handleSaveInvoiceChanges = async () => {
     setSavingInvoice(true);
     try {
-      const supabase = createClient();
-      const targetOrderId = order?.id || String(id);
       const isCredit = remainingInvoiceDebt > 0;
 
-      // 1. Direct Supabase update on orders
-      try {
-        await supabase
-          .from('orders')
-          .update({
-            total: Number(calcTotal),
-            paid_amount: safePaid,
-            remaining_amount: remainingInvoiceDebt,
-            payment_method: isCredit ? 'credit' : 'cash',
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', targetOrderId);
-      } catch (errDb) {
-        console.warn('Direct orders table update caught:', errDb);
-      }
-
-      // 2. Direct Supabase update on profiles debt
-      const customerId = order?.customer_id || order?.customer?.id;
-      if (customerId) {
-        try {
-          const { data: userOrders } = await supabase
-            .from('orders')
-            .select('id, total, total_amount, paid_amount, remaining_amount, status')
-            .eq('customer_id', customerId);
-
-          if (userOrders) {
-            const calculatedTotalDebt = userOrders
-              .filter((o: any) => !['cancelled', 'returned'].includes(o.status))
-              .reduce((sum: number, o: any) => {
-                if (o.id === targetOrderId) return sum + remainingInvoiceDebt;
-                const tot = Number(o.total || o.total_amount || 0);
-                const pd = Number(o.paid_amount || 0);
-                const rem = o.remaining_amount !== null && o.remaining_amount !== undefined ? Number(o.remaining_amount) : Math.max(0, tot - pd);
-                return sum + rem;
-              }, 0);
-
-            await supabase
-              .from('profiles')
-              .update({
-                previous_balance: calculatedTotalDebt,
-                current_debt: calculatedTotalDebt
-              })
-              .eq('id', customerId);
-          }
-        } catch (errProf) {
-          console.warn('Direct profile update caught:', errProf);
-        }
-      }
-
-      // 3. Complete API payload sync for order items and server state
       const payload = {
         items: editableItems.map(item => ({
           product_id: item.product_id || item.id,
@@ -280,6 +224,7 @@ export default function AdminOrderDetail() {
         })),
         shipping_fee: Number(editableShippingFee),
         delivery_fee: Number(editableShippingFee),
+        shipping_cost: Number(editableShippingFee),
         discount_amount: Number(editableDiscount),
         discount: Number(editableDiscount),
         total_amount: Number(calcTotal),
@@ -292,6 +237,7 @@ export default function AdminOrderDetail() {
         current_balance: totalCumulativeDebt
       };
 
+      // استخدام الـ API المعزز بالسيرفر لضمان تحديث الـ DB، المخزون، والآجل
       let res = await fetch(`/api/admin/orders/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -309,7 +255,7 @@ export default function AdminOrderDetail() {
       const data = await res.json().catch(() => ({}));
 
       if (res.ok && (data.success !== false)) {
-        toast({ title: 'تم حفظ الفاتورة وتحديث المديونية التراكمية للعميل بنجاح', type: 'success' });
+        toast({ title: 'تم حفظ الفاتورة وتحديث المخزون والمديونية بنجاح', type: 'success' });
         setShowEditModal(false);
         await fetchOrder(false);
       } else {
@@ -360,14 +306,13 @@ export default function AdminOrderDetail() {
   const paidAmountVal = Number(order.paid_amount || 0);
   const remainingAmountVal = Number(order.remaining_amount !== undefined ? order.remaining_amount : Math.max(0, totalAmount - paidAmountVal));
   const customerProfile = order.customer || order.profiles || {};
-  const deliveryFeeVal = Number(order.delivery_fee || order.shipping_fee || 0);
+  const deliveryFeeVal = Number(order.delivery_fee || order.shipping_fee || order.shipping_cost || 0);
   const customerPreviousBalance = Number(order.previous_balance !== undefined ? order.previous_balance : (customerProfile.previous_balance || 0));
   const expectedTotalDebt = customerPreviousBalance + remainingAmountVal;
 
   return (
     <AdminLayout>
       <div className="space-y-6 print:hidden">
-        {/* Header Action */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
           <div className="flex items-center gap-4">
             <Link href="/admin/orders" className="p-2 bg-slate-100 rounded-xl border border-slate-200 hover:bg-slate-200 text-slate-700">
@@ -381,7 +326,7 @@ export default function AdminOrderDetail() {
 
           <div className="flex items-center gap-3 w-full sm:w-auto flex-wrap">
             <select 
-              value={status}
+              value={status} 
               onChange={(e) => handleStatusChange(e.target.value)}
               disabled={updating}
               className="px-4 py-2.5 border border-slate-300 rounded-xl bg-white text-sm font-bold text-slate-900 focus:outline-none focus:border-emerald-500 shadow-sm"
@@ -396,7 +341,7 @@ export default function AdminOrderDetail() {
 
             <button 
               onClick={handleOpenEditModal}
-              className="btn-secondary flex items-center gap-2 font-bold px-4 py-2.5 text-sm rounded-xl"
+              className="btn-secondary flex items-center gap-2 font-bold px-4 py-2.5 text-sm rounded-xl border border-slate-300 bg-white hover:bg-slate-50"
             >
               <Edit className="w-4 h-4 text-blue-600" />
               <span>تعديل الفاتورة والأسعار</span>
@@ -404,7 +349,7 @@ export default function AdminOrderDetail() {
 
             <button 
               onClick={handlePrint}
-              className="btn-primary flex items-center gap-2 font-bold px-4 py-2.5 text-sm rounded-xl"
+              className="bg-emerald-600 hover:bg-emerald-700 text-white flex items-center gap-2 font-bold px-4 py-2.5 text-sm rounded-xl"
             >
               <Printer className="w-4 h-4" />
               <span>طباعة الفاتورة</span>
@@ -414,7 +359,7 @@ export default function AdminOrderDetail() {
               <button 
                 onClick={handleDeleteThisOrder}
                 disabled={deletingOrder}
-                className="bg-red-50 hover:bg-red-100 dark:bg-red-950/60 dark:hover:bg-red-900/60 text-red-700 dark:text-red-300 border border-red-300 dark:border-red-800 flex items-center gap-2 font-bold px-4 py-2.5 text-sm rounded-xl transition-colors disabled:opacity-50"
+                className="bg-red-50 hover:bg-red-100 text-red-700 border border-red-300 flex items-center gap-2 font-bold px-4 py-2.5 text-sm rounded-xl transition-colors disabled:opacity-50"
               >
                 <Trash2 className="w-4 h-4" />
                 <span>{deletingOrder ? 'جاري حذف الطلب...' : 'حذف الطلب نهائياً'}</span>
@@ -423,9 +368,7 @@ export default function AdminOrderDetail() {
           </div>
         </div>
 
-        {/* Content Layout */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Main Invoice Items */}
           <div className="lg:col-span-2 space-y-6">
             <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
               <div className="p-4 border-b border-slate-200 bg-slate-50 flex justify-between items-center">
@@ -462,7 +405,6 @@ export default function AdminOrderDetail() {
                 </table>
               </div>
 
-              {/* Financial Totals */}
               <div className="p-5 border-t border-slate-200 bg-slate-50 space-y-2 text-sm">
                 <div className="flex justify-between text-slate-600">
                   <span>المجموع الفرعي للبضائع:</span>
@@ -472,10 +414,10 @@ export default function AdminOrderDetail() {
                   <span>مصاريف الشحن والتوصيل:</span>
                   <span className="font-bold text-slate-900">{deliveryFeeVal > 0 ? formatPriceShort(deliveryFeeVal) : 'مجاني'}</span>
                 </div>
-                {Number(order.discount || 0) > 0 && (
+                {Number(order.discount || order.discount_amount || 0) > 0 && (
                   <div className="flex justify-between text-red-600 font-bold">
                     <span>الخصم:</span>
-                    <span>-{formatPriceShort(Number(order.discount))}</span>
+                    <span>-{formatPriceShort(Number(order.discount || order.discount_amount))}</span>
                   </div>
                 )}
                 <div className="flex justify-between pt-3 border-t border-slate-200 items-center">
@@ -486,7 +428,6 @@ export default function AdminOrderDetail() {
             </div>
           </div>
 
-          {/* Sidebar Customer & Account Info */}
           <div className="space-y-6">
             <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-3">
               <h3 className="font-bold text-slate-900 border-b border-slate-200 pb-3">بيانات العميل ومكان التسليم</h3>
@@ -507,7 +448,6 @@ export default function AdminOrderDetail() {
               </div>
             </div>
 
-            {/* Payment & Account Details Card */}
             <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
               <h3 className="font-bold text-slate-900 mb-4 border-b border-slate-200 pb-3">تفاصيل الحساب والتسديد</h3>
               <div className="space-y-3 text-sm">
@@ -549,17 +489,15 @@ export default function AdminOrderDetail() {
         </div>
       </div>
 
-      {/* Admin Invoice Edit Modal */}
       {showEditModal && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl overflow-hidden border border-slate-300 max-h-[90vh] flex flex-col">
-            <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-brand-50">
-              <h3 className="font-bold text-lg text-brand-900">تعديل مكونات الفاتورة ومصاريف الشحن</h3>
+            <div className="p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50">
+              <h3 className="font-bold text-lg text-slate-900">تعديل مكونات الفاتورة ومصاريف الشحن</h3>
               <button onClick={() => setShowEditModal(false)} className="text-slate-400 hover:text-slate-600 text-2xl font-bold">&times;</button>
             </div>
 
             <div className="p-5 overflow-y-auto space-y-4 flex-1">
-              {/* Add item bar */}
               <div className="flex gap-2 items-center bg-slate-50 p-3 rounded-xl border border-slate-200">
                 <select
                   value={selectedProductId}
@@ -581,7 +519,6 @@ export default function AdminOrderDetail() {
                 </button>
               </div>
 
-              {/* Items list */}
               <div className="space-y-2">
                 {editableItems.map((item, idx) => (
                   <div key={item.id || idx} className="flex items-center gap-2 p-3 bg-white border border-slate-200 rounded-xl">
@@ -630,7 +567,6 @@ export default function AdminOrderDetail() {
                 ))}
               </div>
 
-              {/* Shipping & Discount Inputs */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-4 border-t border-slate-200">
                 <div>
                   <label className="block text-xs font-bold text-slate-800 mb-1">مصاريف الشحن والتوصيل (ج.م)</label>
@@ -668,7 +604,6 @@ export default function AdminOrderDetail() {
                 </div>
               </div>
 
-              {/* Calculations Box */}
               <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-2 text-sm">
                 <div className="flex justify-between text-slate-600">
                   <span>مجموع بنود المنتجات:</span>
@@ -729,7 +664,6 @@ export default function AdminOrderDetail() {
         </div>
       )}
 
-      {/* Hidden Invoice Component - printed cleanly */}
       <div className="hidden print:block">
         <ElfarmawyInvoice order={order} />
       </div>
