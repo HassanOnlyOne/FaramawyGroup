@@ -103,11 +103,59 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
     }
 
     const targetOrderId = existingOrder.id;
+    const isCompletedOrDeducted = Boolean(existingOrder.stock_deducted || existingOrder.status === 'completed');
+
     const shipFee = shipping_fee !== undefined ? Number(shipping_fee) : (delivery_fee !== undefined ? Number(delivery_fee) : (shipping_cost !== undefined ? Number(shipping_cost) : Number(existingOrder.delivery_fee || 0)));
     const discFee = discount_amount !== undefined ? Number(discount_amount) : (discount !== undefined ? Number(discount) : Number(existingOrder.discount || 0));
 
     let subtotal = 0;
     if (Array.isArray(items)) {
+      // Differential Stock Adjustment for Edit Order Items if order was already completed/deducted
+      if (isCompletedOrDeducted && Array.isArray(existingOrder.order_items)) {
+        const oldQtyMap = new Map<string, number>();
+        for (const oldIt of existingOrder.order_items) {
+          const pId = oldIt.product_id || oldIt.product?.id;
+          const q = Number(oldIt.quantity || 0);
+          if (pId && q > 0) {
+            oldQtyMap.set(pId, (oldQtyMap.get(pId) || 0) + q);
+          }
+        }
+
+        const newQtyMap = new Map<string, number>();
+        for (const newIt of items) {
+          const pId = newIt.product_id || newIt.id;
+          const q = Number(newIt.quantity || 0);
+          if (pId && q > 0) {
+            newQtyMap.set(pId, (newQtyMap.get(pId) || 0) + q);
+          }
+        }
+
+        const allProductIds = new Set<string>([...oldQtyMap.keys(), ...newQtyMap.keys()]);
+
+        for (const prodId of allProductIds) {
+          const oldQty = oldQtyMap.get(prodId) || 0;
+          const newQty = newQtyMap.get(prodId) || 0;
+          const diff = newQty - oldQty;
+
+          if (diff !== 0) {
+            const { data: product } = await adminClient
+              .from('products')
+              .select('stock_quantity')
+              .eq('id', prodId)
+              .maybeSingle();
+
+            if (product) {
+              const currentStock = Number(product.stock_quantity || 0);
+              const newStock = Math.max(0, currentStock - diff);
+              await adminClient
+                .from('products')
+                .update({ stock_quantity: newStock, updated_at: new Date().toISOString() })
+                .eq('id', prodId);
+            }
+          }
+        }
+      }
+
       subtotal = items.reduce((sum: number, it: any) => {
         const qty = Number(it.quantity || 1);
         const price = Number(it.unit_price || it.price || 0);
@@ -221,7 +269,7 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
       success: true,
       data: updatedOrder,
       order: updatedOrder,
-      message: 'تم حفظ وتحديث الفاتورة ومديونية العميل بنجاح'
+      message: 'تم حفظ وتحديث الفاتورة والمخزون ومديونية العميل بنجاح'
     }, { status: 200 });
   } catch (err: any) {
     console.error('Update Order Error:', err);

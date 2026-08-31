@@ -55,7 +55,7 @@ export async function PATCH(
 
     const targetOrderId = order.id;
     
-    // 1. Strict Single Stock Deduction Safeguard Logic
+    // 1. Single Direct Stock Deduction Safeguard (No RPC Call)
     const isCurrentlyDeducted = Boolean(order.stock_deducted);
     const isNowCompleted = status === 'completed';
     const isCancelledOrReturned = status === 'cancelled' || status === 'returned';
@@ -63,11 +63,11 @@ export async function PATCH(
     let willBeDeducted = isCurrentlyDeducted;
 
     // A. When status becomes 'completed':
-    // If stock_deducted === true in DB, skip deduction immediately.
-    // If stock_deducted === false (or null), deduct exact item quantities (1:1), then set stock_deducted = true.
+    // If stock_deducted === true in DB ⬅️ skip deduction immediately.
+    // If stock_deducted === false (or null) ⬅️ deduct exact item quantities once (1:1), then set stock_deducted = true.
     if (isNowCompleted) {
       if (isCurrentlyDeducted) {
-        // Skip deduction completely if already deducted
+        // Already deducted: skip deduction completely
         willBeDeducted = true;
       } else {
         if (Array.isArray(order.order_items) && order.order_items.length > 0) {

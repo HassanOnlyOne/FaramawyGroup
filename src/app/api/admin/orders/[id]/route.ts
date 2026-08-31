@@ -104,11 +104,61 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
     }
 
     const targetOrderId = existingOrder.id;
+    const isCompletedOrDeducted = Boolean(existingOrder.stock_deducted || existingOrder.status === 'completed');
+
     const shipFee = shipping_fee !== undefined ? Number(shipping_fee) : (delivery_fee !== undefined ? Number(delivery_fee) : (shipping_cost !== undefined ? Number(shipping_cost) : Number(existingOrder.delivery_fee || 0)));
     const discFee = discount_amount !== undefined ? Number(discount_amount) : (discount !== undefined ? Number(discount) : Number(existingOrder.discount || 0));
 
     let subtotal = 0;
     if (Array.isArray(items)) {
+      // 1. Stock Adjustment for Edit Order Items if order was already completed/deducted
+      if (isCompletedOrDeducted && Array.isArray(existingOrder.order_items)) {
+        const oldQtyMap = new Map<string, number>();
+        for (const oldIt of existingOrder.order_items) {
+          const pId = oldIt.product_id || oldIt.product?.id;
+          const q = Number(oldIt.quantity || 0);
+          if (pId && q > 0) {
+            oldQtyMap.set(pId, (oldQtyMap.get(pId) || 0) + q);
+          }
+        }
+
+        const newQtyMap = new Map<string, number>();
+        for (const newIt of items) {
+          const pId = newIt.product_id || newIt.id;
+          const q = Number(newIt.quantity || 0);
+          if (pId && q > 0) {
+            newQtyMap.set(pId, (newQtyMap.get(pId) || 0) + q);
+          }
+        }
+
+        const allProductIds = new Set<string>([...oldQtyMap.keys(), ...newQtyMap.keys()]);
+
+        for (const prodId of allProductIds) {
+          const oldQty = oldQtyMap.get(prodId) || 0;
+          const newQty = newQtyMap.get(prodId) || 0;
+          const diff = newQty - oldQty;
+
+          if (diff !== 0) {
+            const { data: product } = await adminClient
+              .from('products')
+              .select('stock_quantity')
+              .eq('id', prodId)
+              .maybeSingle();
+
+            if (product) {
+              const currentStock = Number(product.stock_quantity || 0);
+              // If diff > 0 (quantity increased/new item): deduct diff
+              // If diff < 0 (quantity decreased/item removed): restore abs(diff)
+              const newStock = Math.max(0, currentStock - diff);
+              await adminClient
+                .from('products')
+                .update({ stock_quantity: newStock, updated_at: new Date().toISOString() })
+                .eq('id', prodId);
+            }
+          }
+        }
+      }
+
       subtotal = items.reduce((sum: number, it: any) => {
         const qty = Number(it.quantity || 1);
         const price = Number(it.unit_price || it.price || 0);
@@ -128,7 +178,7 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
         };
       });
 
-      // 1. Delete old order items for this order & insert updated items
+      // Clear previous order items and insert new items
       await adminClient.from('order_items').delete().eq('order_id', targetOrderId);
       await adminClient.from('order_items').insert(orderItemsToInsert);
     } else {
@@ -140,7 +190,6 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
     const finalRemaining = remaining_amount !== undefined ? Number(remaining_amount) : (remaining_credit_amount !== undefined ? Number(remaining_credit_amount) : Math.max(0, finalTotal - finalPaid));
     const finalMethod = payment_method || (finalRemaining > 0 ? 'credit' : (existingOrder.payment_method || 'cash'));
 
-    // 2. Update main order table fields
     const updatePayload: any = {
       subtotal,
       discount: discFee,
@@ -169,7 +218,6 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
       .maybeSingle();
 
     if (updateError || !updatedOrder) {
-      // Fallback if some column aliases are missing in table schema
       const corePayload = { ...updatePayload };
       delete corePayload.discount_amount;
       delete corePayload.shipping_fee;
@@ -185,7 +233,7 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
       updatedOrder = fbRes.data || { ...existingOrder, ...updatePayload };
     }
 
-    // 3. Recalculate and update customer credit debt in profiles
+    // Cumulative recalculation of customer debt in profiles
     const targetCustomerId = existingOrder.customer_id;
     if (targetCustomerId) {
       const { data: customerOrders } = await adminClient
@@ -231,7 +279,7 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
       success: true,
       data: updatedOrder,
       order: updatedOrder,
-      message: 'تم حفظ وتحديث الفاتورة ومديونية العميل بنجاح'
+      message: 'تم حفظ وتحديث الفاتورة والمخزون ومديونية العميل بنجاح'
     }, { status: 200 });
   } catch (err: any) {
     console.error('Update Order Error:', err);
@@ -264,7 +312,6 @@ export async function DELETE(
     const adminClient = createAdminClient();
     const supabase = await createClient();
 
-    // Query order
     let query = adminClient.from('orders').select('*, customer:profiles(*)');
     if (id.startsWith('INV-')) query = query.eq('invoice_no', id);
     else if (id.startsWith('ORD-')) query = query.eq('order_number', id);
@@ -282,7 +329,6 @@ export async function DELETE(
       return NextResponse.json({ success: false, error: 'الطلب غير موجود' }, { status: 404 });
     }
 
-    // Check if order is cancelled
     const isCancelled = ['cancelled', 'ملغي', 'ملغى'].includes(String(order.status || '').toLowerCase());
     if (!isCancelled) {
       return NextResponse.json({ 
@@ -293,10 +339,8 @@ export async function DELETE(
 
     const targetOrderId = order.id;
 
-    // Delete order_items first
     await adminClient.from('order_items').delete().eq('order_id', targetOrderId);
 
-    // Delete order
     const { error: delError } = await adminClient.from('orders').delete().eq('id', targetOrderId);
     if (delError) {
       await supabase.from('orders').delete().eq('id', targetOrderId);
