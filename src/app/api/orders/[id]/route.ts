@@ -62,6 +62,7 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
       items, 
       shipping_fee, 
       delivery_fee, 
+      shipping_cost,
       discount_amount, 
       discount, 
       total_amount, 
@@ -102,7 +103,7 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
     }
 
     const targetOrderId = existingOrder.id;
-    const shipFee = shipping_fee !== undefined ? Number(shipping_fee) : (delivery_fee !== undefined ? Number(delivery_fee) : Number(existingOrder.delivery_fee || 0));
+    const shipFee = shipping_fee !== undefined ? Number(shipping_fee) : (delivery_fee !== undefined ? Number(delivery_fee) : (shipping_cost !== undefined ? Number(shipping_cost) : Number(existingOrder.delivery_fee || 0)));
     const discFee = discount_amount !== undefined ? Number(discount_amount) : (discount !== undefined ? Number(discount) : Number(existingOrder.discount || 0));
 
     let subtotal = 0;
@@ -141,8 +142,12 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
     const updatePayload: any = {
       subtotal,
       discount: discFee,
+      discount_amount: discFee,
       delivery_fee: shipFee,
+      shipping_fee: shipFee,
+      shipping_cost: shipFee,
       total: finalTotal,
+      total_amount: finalTotal,
       paid_amount: finalPaid,
       remaining_amount: finalRemaining,
       payment_method: finalMethod,
@@ -162,9 +167,15 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
       .maybeSingle();
 
     if (updateError || !updatedOrder) {
+      const corePayload = { ...updatePayload };
+      delete corePayload.discount_amount;
+      delete corePayload.shipping_fee;
+      delete corePayload.shipping_cost;
+      delete corePayload.total_amount;
+
       const fbRes = await supabase
         .from('orders')
-        .update(updatePayload)
+        .update(corePayload)
         .eq('id', targetOrderId)
         .select('*, order_items(*, product:products(*)), customer:profiles(*)')
         .maybeSingle();
@@ -192,7 +203,17 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
             return sum + rem;
           }, 0);
 
-        await adminClient.from('profiles').update({ previous_balance: totalCustomerDebt }).eq('id', targetCustomerId);
+        try {
+          await adminClient.from('profiles').update({
+            previous_balance: totalCustomerDebt,
+            current_debt: totalCustomerDebt,
+            debt_balance: totalCustomerDebt
+          }).eq('id', targetCustomerId);
+        } catch {
+          await adminClient.from('profiles').update({
+            previous_balance: totalCustomerDebt
+          }).eq('id', targetCustomerId);
+        }
       }
     }
 

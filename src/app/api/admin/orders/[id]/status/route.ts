@@ -55,7 +55,7 @@ export async function PATCH(
 
     const targetOrderId = order.id;
     
-    // 1. Stock Deduction Safeguard Logic
+    // 1. Strict Single Stock Deduction Safeguard Logic
     const isCurrentlyDeducted = Boolean(order.stock_deducted);
     const isNowCompleted = status === 'completed';
     const isCancelledOrReturned = status === 'cancelled' || status === 'returned';
@@ -64,96 +64,74 @@ export async function PATCH(
 
     // A. When status becomes 'completed':
     // If stock_deducted === true in DB, skip deduction immediately.
-    // If stock_deducted === false, deduct exact item quantities once (1:1), then set stock_deducted = true.
-    if (isNowCompleted && !isCurrentlyDeducted) {
-      try {
-        const { data: rpcRes, error: rpcErr } = await adminClient.rpc('complete_order_and_deduct_stock', {
-          p_order_id: targetOrderId
-        });
-
-        if (!rpcErr && rpcRes && rpcRes.success) {
-          willBeDeducted = true;
-        } else {
-          // Fallback 1:1 JS deduction if RPC function is not created in DB instance yet
-          if (Array.isArray(order.order_items) && order.order_items.length > 0) {
-            const qtyByProduct = new Map<string, number>();
-            for (const item of order.order_items) {
-              const prodId = item.product_id || item.product?.id;
-              const qty = Number(item.quantity || 0);
-              if (prodId && qty > 0) {
-                qtyByProduct.set(prodId, (qtyByProduct.get(prodId) || 0) + qty);
-              }
-            }
-
-            for (const [prodId, totalQty] of qtyByProduct.entries()) {
-              const { data: product } = await adminClient
-                .from('products')
-                .select('stock_quantity')
-                .eq('id', prodId)
-                .maybeSingle();
-
-              if (product) {
-                const currentStock = Number(product.stock_quantity || 0);
-                const newStock = Math.max(0, currentStock - totalQty);
-                await adminClient
-                  .from('products')
-                  .update({ stock_quantity: newStock, updated_at: new Date().toISOString() })
-                  .eq('id', prodId);
-              }
+    // If stock_deducted === false (or null), deduct exact item quantities (1:1), then set stock_deducted = true.
+    if (isNowCompleted) {
+      if (isCurrentlyDeducted) {
+        // Skip deduction completely if already deducted
+        willBeDeducted = true;
+      } else {
+        if (Array.isArray(order.order_items) && order.order_items.length > 0) {
+          const qtyByProduct = new Map<string, number>();
+          for (const item of order.order_items) {
+            const prodId = item.product_id || item.product?.id;
+            const qty = Number(item.quantity || 0);
+            if (prodId && qty > 0) {
+              qtyByProduct.set(prodId, (qtyByProduct.get(prodId) || 0) + qty);
             }
           }
-          willBeDeducted = true;
+
+          for (const [prodId, totalQty] of qtyByProduct.entries()) {
+            const { data: product } = await adminClient
+              .from('products')
+              .select('stock_quantity')
+              .eq('id', prodId)
+              .maybeSingle();
+
+            if (product) {
+              const currentStock = Number(product.stock_quantity || 0);
+              const newStock = Math.max(0, currentStock - totalQty);
+              await adminClient
+                .from('products')
+                .update({ stock_quantity: newStock, updated_at: new Date().toISOString() })
+                .eq('id', prodId);
+            }
+          }
         }
-      } catch (e) {
-        console.warn('RPC complete_order_and_deduct_stock exception:', e);
         willBeDeducted = true;
       }
     }
 
     // B. When order is cancelled or returned after being completed:
     // If stock_deducted === true, restore quantities once (+ item.quantity), then set stock_deducted = false.
-    if ((isCancelledOrReturned || (!isNowCompleted && isCurrentlyDeducted)) && isCurrentlyDeducted) {
-      try {
-        const { data: rpcRes, error: rpcErr } = await adminClient.rpc('restore_order_stock', {
-          p_order_id: targetOrderId
-        });
-
-        if (!rpcErr && rpcRes && rpcRes.success) {
-          willBeDeducted = false;
-        } else {
-          if (Array.isArray(order.order_items) && order.order_items.length > 0) {
-            const qtyByProduct = new Map<string, number>();
-            for (const item of order.order_items) {
-              const prodId = item.product_id || item.product?.id;
-              const qty = Number(item.quantity || 0);
-              if (prodId && qty > 0) {
-                qtyByProduct.set(prodId, (qtyByProduct.get(prodId) || 0) + qty);
-              }
-            }
-
-            for (const [prodId, totalQty] of qtyByProduct.entries()) {
-              const { data: product } = await adminClient
-                .from('products')
-                .select('stock_quantity')
-                .eq('id', prodId)
-                .maybeSingle();
-
-              if (product) {
-                const currentStock = Number(product.stock_quantity || 0);
-                const newStock = currentStock + totalQty;
-                await adminClient
-                  .from('products')
-                  .update({ stock_quantity: newStock, updated_at: new Date().toISOString() })
-                  .eq('id', prodId);
-              }
-            }
+    if (isCancelledOrReturned && isCurrentlyDeducted) {
+      if (Array.isArray(order.order_items) && order.order_items.length > 0) {
+        const qtyByProduct = new Map<string, number>();
+        for (const item of order.order_items) {
+          const prodId = item.product_id || item.product?.id;
+          const qty = Number(item.quantity || 0);
+          if (prodId && qty > 0) {
+            qtyByProduct.set(prodId, (qtyByProduct.get(prodId) || 0) + qty);
           }
-          willBeDeducted = false;
         }
-      } catch (e) {
-        console.warn('RPC restore_order_stock exception:', e);
-        willBeDeducted = false;
+
+        for (const [prodId, totalQty] of qtyByProduct.entries()) {
+          const { data: product } = await adminClient
+            .from('products')
+            .select('stock_quantity')
+            .eq('id', prodId)
+            .maybeSingle();
+
+          if (product) {
+            const currentStock = Number(product.stock_quantity || 0);
+            const newStock = currentStock + totalQty;
+            await adminClient
+              .from('products')
+              .update({ stock_quantity: newStock, updated_at: new Date().toISOString() })
+              .eq('id', prodId);
+          }
+        }
       }
+      willBeDeducted = false;
     }
 
     // Update order status AND stock_deducted in database
@@ -213,7 +191,17 @@ export async function PATCH(
             return sum + rem;
           }, 0);
 
-        await adminClient.from('profiles').update({ previous_balance: totalCustomerDebt }).eq('id', order.customer_id);
+        try {
+          await adminClient.from('profiles').update({
+            previous_balance: totalCustomerDebt,
+            current_debt: totalCustomerDebt,
+            debt_balance: totalCustomerDebt
+          }).eq('id', order.customer_id);
+        } catch {
+          await adminClient.from('profiles').update({
+            previous_balance: totalCustomerDebt
+          }).eq('id', order.customer_id);
+        }
       }
     }
 

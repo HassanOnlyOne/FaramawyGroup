@@ -63,6 +63,7 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
       items, 
       shipping_fee, 
       delivery_fee, 
+      shipping_cost,
       discount_amount, 
       discount, 
       total_amount, 
@@ -103,7 +104,7 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
     }
 
     const targetOrderId = existingOrder.id;
-    const shipFee = shipping_fee !== undefined ? Number(shipping_fee) : (delivery_fee !== undefined ? Number(delivery_fee) : Number(existingOrder.delivery_fee || 0));
+    const shipFee = shipping_fee !== undefined ? Number(shipping_fee) : (delivery_fee !== undefined ? Number(delivery_fee) : (shipping_cost !== undefined ? Number(shipping_cost) : Number(existingOrder.delivery_fee || 0)));
     const discFee = discount_amount !== undefined ? Number(discount_amount) : (discount !== undefined ? Number(discount) : Number(existingOrder.discount || 0));
 
     let subtotal = 0;
@@ -127,7 +128,7 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
         };
       });
 
-      // Clear previous order items and insert new items
+      // 1. Delete old order items for this order & insert updated items
       await adminClient.from('order_items').delete().eq('order_id', targetOrderId);
       await adminClient.from('order_items').insert(orderItemsToInsert);
     } else {
@@ -139,11 +140,16 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
     const finalRemaining = remaining_amount !== undefined ? Number(remaining_amount) : (remaining_credit_amount !== undefined ? Number(remaining_credit_amount) : Math.max(0, finalTotal - finalPaid));
     const finalMethod = payment_method || (finalRemaining > 0 ? 'credit' : (existingOrder.payment_method || 'cash'));
 
+    // 2. Update main order table fields
     const updatePayload: any = {
       subtotal,
       discount: discFee,
+      discount_amount: discFee,
       delivery_fee: shipFee,
+      shipping_fee: shipFee,
+      shipping_cost: shipFee,
       total: finalTotal,
+      total_amount: finalTotal,
       paid_amount: finalPaid,
       remaining_amount: finalRemaining,
       payment_method: finalMethod,
@@ -163,16 +169,23 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
       .maybeSingle();
 
     if (updateError || !updatedOrder) {
+      // Fallback if some column aliases are missing in table schema
+      const corePayload = { ...updatePayload };
+      delete corePayload.discount_amount;
+      delete corePayload.shipping_fee;
+      delete corePayload.shipping_cost;
+      delete corePayload.total_amount;
+
       const fbRes = await supabase
         .from('orders')
-        .update(updatePayload)
+        .update(corePayload)
         .eq('id', targetOrderId)
         .select('*, order_items(*, product:products(*)), customer:profiles(*)')
         .maybeSingle();
       updatedOrder = fbRes.data || { ...existingOrder, ...updatePayload };
     }
 
-    // Cumulative recalculation of customer debt in profiles
+    // 3. Recalculate and update customer credit debt in profiles
     const targetCustomerId = existingOrder.customer_id;
     if (targetCustomerId) {
       const { data: customerOrders } = await adminClient
@@ -187,7 +200,7 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
             if (o.id === targetOrderId) {
               return sum + finalRemaining;
             }
-            const ordTotal = Number(o.total || o.total_amount || 0);
+            const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
             const ordPaid = Number(o.paid_amount || 0);
             const rem = o.remaining_amount !== null && o.remaining_amount !== undefined ? Number(o.remaining_amount) : Math.max(0, ordTotal - ordPaid);
             return sum + rem;
@@ -196,7 +209,8 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
         try {
           await adminClient.from('profiles').update({
             previous_balance: totalCustomerDebt,
-            current_debt: totalCustomerDebt
+            current_debt: totalCustomerDebt,
+            debt_balance: totalCustomerDebt
           }).eq('id', targetCustomerId);
         } catch {
           await adminClient.from('profiles').update({
