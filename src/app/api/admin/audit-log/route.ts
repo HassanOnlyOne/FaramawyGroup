@@ -70,7 +70,7 @@ export async function GET(request: NextRequest) {
       if (!log) continue;
       const logId = log.id ? String(log.id) : '';
       
-      // Signature based on action_type + details + 5-second bucket
+      // Signature based on action_type + details + 5-second time bucket
       const timeBucket = Math.floor(new Date(log.created_at || Date.now()).getTime() / 5000);
       const signature = `${log.action_type}:::${log.details}:::${timeBucket}`;
       
@@ -114,7 +114,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Sort descending
+    // Ensure strict descending order by created_at
     mergedLogs.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
     return NextResponse.json({ 
