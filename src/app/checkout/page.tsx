@@ -4,9 +4,8 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { CustomerLayout } from '@/components/layout/customer-layout';
 import { useCart } from '@/components/cart/cart-provider';
-import { PaymentMethod } from '@/lib/types';
 import { useNumberFormat } from '@/context/number-format-context';
-import { CheckCircle2, CreditCard, Banknote, ShieldAlert, Loader2, Phone, MapPin, User, FileText, Lock } from 'lucide-react';
+import { CheckCircle2, CreditCard, Banknote, ShieldAlert, Loader2, MapPin, Lock, Info } from 'lucide-react';
 
 export default function CheckoutPage() {
   const router = useRouter();
@@ -82,6 +81,10 @@ export default function CheckoutPage() {
     (profile.credit_enabled === true || profile.is_credit_enabled === true || (profile.credit_limit && profile.credit_limit > 0))
   );
 
+  const creditLimit = Number(profile?.credit_limit || 0);
+  const currentDebt = previousDebt;
+  const availableCredit = Math.max(0, creditLimit - currentDebt);
+
   const cartSubtotal = items.reduce((sum, it) => sum + Number(it.total_price || (it.quantity * (it.unit_price || it.appliedPrice || it.product?.base_price || 0))), 0);
   const numPaid = Math.min(total, Math.max(0, Number(paidAmount || 0)));
   const remainingCredit = (paymentMethod === 'credit' && isCreditAllowed) ? Math.max(0, total - numPaid) : 0;
@@ -95,9 +98,17 @@ export default function CheckoutPage() {
       return;
     }
 
-    if (paymentMethod === 'credit' && !isCreditAllowed) {
-      setError('خاصية الشراء والدفع الآجل غير مفعلة لحسابك حالياً. يرجى اختيار الدفع نقداً عند الاستلام.');
-      return;
+    // Strict Credit Limit Validation on remaining credit amount ONLY
+    if (paymentMethod === 'credit') {
+      if (!isCreditAllowed) {
+        setError('خاصية الشراء والدفع الآجل غير مفعلة لحسابك حالياً. يرجى اختيار الدفع نقداً عند الاستلام.');
+        return;
+      }
+
+      if (remainingCredit > availableCredit) {
+        setError(`عفواً، المبلغ المتبقي للآجل (${remainingCredit.toLocaleString('ar-EG')} ج.م) يتجاوز الرصيد الائتماني المتاح لك (${availableCredit.toLocaleString('ar-EG')} ج.م). الحد الائتماني المعتمد: ${creditLimit.toLocaleString('ar-EG')} ج.م والمديونية السابقة: ${currentDebt.toLocaleString('ar-EG')} ج.م.`);
+        return;
+      }
     }
 
     if (!customerName.trim()) {
@@ -393,8 +404,15 @@ export default function CheckoutPage() {
                 />
                 <CreditCard className="w-6 h-6 text-orange-600 dark:text-orange-400" />
                 <div className="flex-1">
-                  <span className="font-black text-sm block">دفع آجل (حساب تاجر معتمد)</span>
-                  <span className="text-xs text-slate-500 dark:text-slate-400">إضافة الفاتورة إلى كشف حساب الأجل والمديونية المعتمدة</span>
+                  <div className="flex justify-between items-center flex-wrap gap-1">
+                    <span className="font-black text-sm block">دفع آجل (حساب تاجر معتمد)</span>
+                    <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-950/60 px-2 py-0.5 rounded-lg border border-emerald-200 dark:border-emerald-800">
+                      رصيد متاح: {formatPriceShort(availableCredit)}
+                    </span>
+                  </div>
+                  <span className="text-xs text-slate-500 dark:text-slate-400 block mt-0.5">
+                    الحد الائتماني: {formatPriceShort(creditLimit)} — المديونية الحالية: {formatPriceShort(currentDebt)}
+                  </span>
                 </div>
               </label>
             ) : (
@@ -439,6 +457,15 @@ export default function CheckoutPage() {
                 <span className="text-slate-600 dark:text-slate-400">المبلغ المتبقي الذي سيُرحل للأجل:</span>
                 <span className="text-orange-700 dark:text-orange-400 font-mono text-sm">{formatPriceShort(remainingCredit)}</span>
               </div>
+
+              {remainingCredit > availableCredit && (
+                <div className="p-3 bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-900 rounded-xl text-xs text-red-700 dark:text-red-300 font-bold flex items-center gap-2">
+                  <ShieldAlert className="w-4 h-4 shrink-0 text-red-600" />
+                  <span>
+                    المتبقي الآجل ({formatPriceShort(remainingCredit)}) أكبر من الرصيد المتاح لك ({formatPriceShort(availableCredit)}). يرجى زيادة الدفعة الكاش.
+                  </span>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -447,7 +474,7 @@ export default function CheckoutPage() {
         <button
           onClick={handleCheckout}
           disabled={submitting || items.length === 0}
-          className="w-full btn-primary py-4 rounded-2xl font-black text-base flex items-center justify-center gap-2 shadow-xl disabled:opacity-50"
+          className="w-full btn-primary py-4 rounded-2xl font-black text-base flex items-center justify-center gap-2 shadow-xl disabled:opacity-50 cursor-pointer"
         >
           {submitting ? (
             <>

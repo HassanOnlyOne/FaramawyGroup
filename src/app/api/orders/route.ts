@@ -236,7 +236,16 @@ export async function POST(req: NextRequest) {
     const prevBalance = Number(customerProfile?.current_debt !== undefined && customerProfile?.current_debt !== null ? customerProfile.current_debt : (customerProfile?.previous_balance || 0));
     const method = (payment_method === 'credit' || payment_method === 'آجل' || payment_method === 'credit_payment') ? 'credit' : 'cash';
 
-    // 2. Strict Credit Validation for credit payment method
+    // Calculate finalPaid and finalRemaining
+    const finalPaid = method === 'cash' 
+      ? total 
+      : Math.min(total, Math.max(0, Number(paid_amount || 0)));
+    
+    const finalRemaining = method === 'cash' 
+      ? 0 
+      : Math.max(0, total - finalPaid);
+
+    // 2. Strict Credit Validation: check if remaining credit exceeds available credit
     if (method === 'credit') {
       const isCreditEnabled = customerProfile?.is_credit_enabled !== false && customerProfile?.credit_enabled !== false;
       if (!isCreditEnabled) {
@@ -247,23 +256,14 @@ export async function POST(req: NextRequest) {
 
       const creditLimit = Number(customerProfile?.credit_limit || 0);
       const currentDebt = prevBalance;
-      const availableCredit = creditLimit - currentDebt;
+      const availableCredit = Math.max(0, creditLimit - currentDebt);
 
-      if (total > availableCredit) {
+      if (finalRemaining > availableCredit) {
         return NextResponse.json({
-          error: `عفواً، إجمالي الطلب (${total} ج.م) يتجاوز الرصيد الائتماني المتاح لك (${availableCredit} ج.م)`
+          error: `عفواً، المبلغ المتبقي للآجل (${finalRemaining} ج.م) يتجاوز الرصيد الائتماني المتاح لك (${availableCredit} ج.م)`
         }, { status: 400 });
       }
     }
-
-    // Cash orders have paid_amount = total and remaining_amount = 0 (0 debt added)
-    const finalPaid = method === 'cash' 
-      ? total 
-      : Math.min(total, Math.max(0, Number(paid_amount || 0)));
-    
-    const finalRemaining = method === 'cash' 
-      ? 0 
-      : Math.max(0, total - finalPaid);
 
     const finalNotes = customer_notes || order_notes || '';
 
@@ -278,7 +278,7 @@ export async function POST(req: NextRequest) {
       payment_method: method,
       subtotal: subtotal || total,
       discount,
-      total,
+      total: total,
       total_amount: total,
       delivery_address: delivery_address || shipping_address || customerProfile?.address || '',
       contact_phone: contactPhoneClean(contact_phone || customerProfile?.phone || ''),
@@ -322,6 +322,8 @@ export async function POST(req: NextRequest) {
       
       const payload2: any = { ...baseOrderPayload };
       payload2.invoice_number = nextInvoiceNumber;
+      payload2.total = total;
+      payload2.total_amount = total;
       
       const res2 = await adminClient.from('orders').insert([payload2]).select().maybeSingle();
       if (res2.data) {
