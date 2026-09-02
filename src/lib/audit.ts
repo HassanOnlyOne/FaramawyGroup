@@ -63,27 +63,23 @@ export function normalizeCategory(cat: string): string {
 export function formatRoleTitle(role?: string): string {
   const r = String(role || '').toLowerCase().trim();
   switch (r) {
-    case 'super_owner':
-      return 'مالك النظام';
-    case 'owner':
-      return 'مالك المتجر';
     case 'admin':
     case 'manager':
-    case 'المدير العام':
-      return 'مدير عام';
-    case 'staff':
-      return 'مشرف';
+    case 'super_owner':
+    case 'owner':
+      return 'مدير';
     case 'delegate':
-      return 'مندوب مبيعات';
+    case 'rep':
+      return 'مندوب';
     case 'customer':
-      return 'عميل';
+    case 'client':
     default:
-      return role || 'مشرف';
+      return 'عميل';
   }
 }
 
 /**
- * Centralized helper function to log administrative actions
+ * Centralized helper function to log administrative and user actions
  */
 export async function logAction({
   actionType,
@@ -122,7 +118,7 @@ export async function logAction({
     let prof: any = null;
     try {
       let authUser: any = null;
-      if (!userId) {
+      if (!userId || userId === 'admin') {
         const { data: authData } = await supabase.auth.getUser();
         authUser = authData?.user;
         if (authUser) {
@@ -130,7 +126,7 @@ export async function logAction({
         }
       }
 
-      if (userId) {
+      if (userId && userId !== 'admin') {
         const profRes = await adminClient
           .from('profiles')
           .select('full_name, store_name, role, email')
@@ -157,20 +153,25 @@ export async function logAction({
       }
 
       if (!userName && authUser) {
-        userName = authUser.user_metadata?.full_name || authUser.email || '';
+        userName = authUser.user_metadata?.full_name || (authUser.email ? authUser.email.split('@')[0] : '');
       }
     } catch (e) {
       console.warn('Could not resolve user profile in audit log:', e);
     }
 
-    userRole = formatRoleTitle(userRole || 'مدير عام');
-    if (!userName || userName === 'المدير العام' || userName === 'مدير عام' || userName === 'مسؤول الإدارة' || userName === 'المدير') {
-      userName = user?.name || (prof?.email ? prof.email.split('@')[0] : 'مشرف النظام');
+    userRole = formatRoleTitle(userRole || prof?.role || 'admin');
+    
+    if (!userName || userName === 'المدير العام' || userName === 'مدير عام' || userName === 'مسؤول الإدارة' || userName === 'المدير' || userName === 'مشرف النظام') {
+      userName = prof?.full_name || prof?.store_name || user?.name || (prof?.email ? prof.email.split('@')[0] : (userRole === 'مدير' ? 'مدير النظام' : 'عميل المتجر'));
     }
 
     // Format as "Name (Role)" if not already formatted
     if (userName && !userName.includes('(')) {
-      const shortRole = userRole.includes('مدير') ? 'مدير' : userRole.includes('مالك') ? 'مالك' : userRole.includes('مندوب') ? 'مندوب' : 'مشرف';
+      const shortRole = userRole.includes('مدير') || userRole.includes('admin')
+        ? 'مدير' 
+        : userRole.includes('مندوب') || userRole.includes('delegate')
+        ? 'مندوب' 
+        : 'عميل';
       userName = `${userName} (${shortRole})`;
     }
 

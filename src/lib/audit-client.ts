@@ -10,10 +10,10 @@ export async function recordAuditLog(params: {
 }) {
   try {
     const supabase = createClient();
-    let uName = params.user_name || 'مشرف النظام';
-    let uRole = params.user_role || 'مشرف';
+    let uName = params.user_name || '';
+    let uRole = params.user_role || '';
 
-    if (!params.user_name && typeof window !== 'undefined') {
+    if (!uName && typeof window !== 'undefined') {
       try {
         const { data: { user } } = await supabase.auth.getUser();
         if (user) {
@@ -23,10 +23,10 @@ export async function recordAuditLog(params: {
             .eq('id', user.id)
             .maybeSingle();
           if (profile) {
-            uName = profile.full_name || profile.store_name || profile.email || uName;
+            uName = profile.full_name || profile.store_name || (profile.email ? profile.email.split('@')[0] : uName);
             uRole = profile.role || uRole;
           } else if (user.email) {
-            uName = user.email;
+            uName = user.email.split('@')[0];
           }
         }
       } catch (e) {
@@ -34,12 +34,28 @@ export async function recordAuditLog(params: {
       }
     }
 
+    const roleMap: Record<string, string> = {
+      admin: 'مدير',
+      manager: 'مدير',
+      delegate: 'مندوب',
+      rep: 'مندوب',
+      customer: 'عميل',
+      client: 'عميل'
+    };
+
+    const cleanRole = roleMap[uRole] || (uRole.includes('admin') ? 'مدير' : uRole.includes('delegate') ? 'مندوب' : 'عميل');
+    let formattedName = uName || (cleanRole === 'مدير' ? 'مدير النظام' : 'عميل المتجر');
+
+    if (!formattedName.includes('(')) {
+      formattedName = `${formattedName} (${cleanRole})`;
+    }
+
     const payload = {
       action_type: params.action_type,
       category: params.category || 'عام وعمليات أخرى',
       details: params.details,
-      user_name: uName,
-      user_role: uRole,
+      user_name: formattedName,
+      user_role: cleanRole,
       user_id: params.user_id || null,
       created_at: new Date().toISOString()
     };

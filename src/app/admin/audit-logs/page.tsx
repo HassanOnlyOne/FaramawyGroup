@@ -102,31 +102,48 @@ export default function AuditLogsPage() {
     };
   }, [fetchLogs]);
 
+  // Helper to extract clean actual user name with Arabic role
+  const getCleanUserName = (log: any): string => {
+    let rawName = (log.user_name || '').trim();
+
+    // Convert legacy / mislabeled roles
+    if (rawName.includes('(مشرف)')) {
+      if (log.user_role === 'customer' || log.user_role === 'عميل') {
+        rawName = rawName.replace('(مشرف)', '(عميل)');
+      } else {
+        rawName = rawName.replace('(مشرف)', '(مدير)');
+      }
+    }
+
+    if (rawName.includes('(customer)')) rawName = rawName.replace('(customer)', '(عميل)');
+    if (rawName.includes('(delegate)')) rawName = rawName.replace('(delegate)', '(مندوب)');
+    if (rawName.includes('(admin)')) rawName = rawName.replace('(admin)', '(مدير)');
+    if (rawName.includes('(staff)')) rawName = rawName.replace('(staff)', '(مدير)');
+
+    if (rawName && !['مسؤول الإدارة', 'إدارة النظام'].includes(rawName)) {
+      return rawName;
+    }
+
+    if (log.user_email) {
+      const r = log.user_role === 'customer' ? 'عميل' : (log.user_role === 'delegate' ? 'مندوب' : 'مدير');
+      return `${log.user_email.split('@')[0]} (${r})`;
+    }
+
+    const defaultRole = log.user_role === 'customer' ? 'عميل' : (log.user_role === 'delegate' ? 'مندوب' : 'مدير');
+    return rawName || `مستخدم النظام (${defaultRole})`;
+  };
+
   // Clean, real user names for dropdown filter
   const userOptions = useMemo(() => {
     const set = new Set<string>();
     logs.forEach(l => {
-      let name = (l.user_name || '').trim();
-      if (name && !['المدير العام', 'مسؤول الإدارة', 'إدارة النظام'].includes(name)) {
+      const name = getCleanUserName(l);
+      if (name) {
         set.add(name);
-      } else if (l.user_email) {
-        set.add(l.user_email);
       }
     });
     return Array.from(set);
   }, [logs]);
-
-  // Helper to extract clean actual user name
-  const getCleanUserName = (log: any): string => {
-    const rawName = (log.user_name || '').trim();
-    if (rawName && !['المدير العام', 'مسؤول الإدارة', 'إدارة النظام', 'مدير عام', 'المدير'].includes(rawName)) {
-      return rawName;
-    }
-    if (log.user_email) {
-      return log.user_email;
-    }
-    return rawName || 'مشرف النظام';
-  };
 
   // Filter logs based on category, time chip, user, and search
   const filteredLogs = useMemo(() => {
