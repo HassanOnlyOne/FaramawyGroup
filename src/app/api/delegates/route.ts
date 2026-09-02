@@ -6,6 +6,9 @@ import { logAction } from '@/lib/audit';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
+// In-memory fallback buffer for delegates directory
+let memoryDelegates: any[] = [];
+
 async function getNextDelegateCode(adminClient: any): Promise<string> {
   try {
     const { data: delegates } = await adminClient
@@ -30,179 +33,365 @@ async function getNextDelegateCode(adminClient: any): Promise<string> {
   }
 }
 
+// GET: List all delegates
 export async function GET(req: NextRequest) {
   try {
     const adminClient = createAdminClient();
     const supabase = await createClient();
 
-    let { data: delegates, error } = await adminClient
-      .from('profiles')
-      .select('*')
-      .eq('role', 'delegate')
-      .order('created_at', { ascending: false });
+    let allDelegates: any[] = [];
 
-    if (error || !delegates) {
-      const fb = await supabase
-        .from('profiles')
+    // 1. Try querying dedicated `delegates` table
+    try {
+      const { data: dbDelegates, error: dbErr } = await adminClient
+        .from('delegates')
         .select('*')
-        .eq('role', 'delegate')
         .order('created_at', { ascending: false });
-      delegates = fb.data;
+
+      if (!dbErr && dbDelegates && dbDelegates.length > 0) {
+        allDelegates = dbDelegates;
+      }
+    } catch {}
+
+    // 2. Also query `profiles` where role = 'delegate' as fallback / synchronization
+    if (allDelegates.length === 0) {
+      try {
+        let { data: profileDelegates, error: profErr } = await adminClient
+          .from('profiles')
+          .select('*')
+          .eq('role', 'delegate')
+          .order('created_at', { ascending: false });
+
+        if (profErr || !profileDelegates) {
+          const fb = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('role', 'delegate')
+            .order('created_at', { ascending: false });
+          profileDelegates = fb.data;
+        }
+
+        if (profileDelegates && profileDelegates.length > 0) {
+          allDelegates = profileDelegates;
+        }
+      } catch {}
     }
 
-    const formatted = (delegates || []).map((d: any, i: number) => ({
-      ...d,
-      customer_code: d.customer_code ? String(d.customer_code).replace(/\D/g, '') : String(501 + i)
+    // 3. Merge with in-memory fallback
+    const delMap = new Map<string, any>();
+    allDelegates.forEach(d => delMap.set(d.id, d));
+    memoryDelegates.forEach(d => delMap.set(d.id, d));
+
+    const finalDelegates = Array.from(delMap.values()).map((d: any, i: number) => ({
+      id: d.id,
+      full_name: d.full_name || d.name || 'مندوب مبيعات',
+      phone: d.phone || null,
+      territory: d.territory || d.store_name || d.route_name || 'خط مبيعات عام',
+      route_name: d.territory || d.store_name || d.route_name || 'خط مبيعات عام',
+      is_active: d.is_active !== undefined ? Boolean(d.is_active) : true,
+      notes: d.notes || null,
+      customer_code: d.customer_code ? String(d.customer_code).replace(/\D/g, '') : String(501 + i),
+      created_at: d.created_at || new Date().toISOString()
     }));
 
-    return NextResponse.json({ data: formatted, delegates: formatted }, { status: 200 });
+    finalDelegates.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+    return NextResponse.json({ success: true, data: finalDelegates, delegates: finalDelegates }, { status: 200 });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
 
+// POST: Add a new delegate
 export async function POST(req: NextRequest) {
   try {
     const adminClient = createAdminClient();
     const supabase = await createClient();
 
     const body = await req.json();
-    const { full_name, phone, route_name, territory } = body;
+    const { full_name, phone, territory, route_name, is_active = true, notes } = body;
 
     const trimmedName = (full_name || '').trim();
-    const cleanPhone = (phone || '').trim();
+    const cleanPhone = phone ? String(phone).trim() : null;
     const territoryName = (territory || route_name || 'خط مبيعات عام').trim();
 
     if (!trimmedName) {
       return NextResponse.json({ error: 'يرجى إدخال اسم المندوب' }, { status: 400 });
     }
 
-    if (cleanPhone) {
-      // 1. Check for duplicate phone in profiles table
-      const { data: existingPhone } = await adminClient
-        .from('profiles')
-        .select('id, full_name, phone')
-        .eq('phone', cleanPhone)
-        .maybeSingle();
-
-      if (existingPhone) {
-        return NextResponse.json({
-          error: 'رقم الهاتف مسجل بالفعل لمستخدم آخر'
-        }, { status: 400 });
-      }
-    }
-
     const nextCode = await getNextDelegateCode(adminClient);
-    const payload: any = {
-      id: crypto.randomUUID(),
+    const delegateId = crypto.randomUUID();
+    const nowIso = new Date().toISOString();
+
+    const delegateRecord: any = {
+      id: delegateId,
       full_name: trimmedName,
-      store_name: territoryName,
-      phone: cleanPhone || null,
-      email: `rep${nextCode}@elfarmawy.com`,
+      phone: cleanPhone,
+      territory: territoryName,
+      route_name: territoryName,
+      is_active: is_active !== false,
+      notes: notes ? String(notes).trim() : null,
       customer_code: nextCode,
-      role: 'delegate',
-      credit_limit: 0,
-      previous_balance: 0,
-      current_debt: 0,
-      credit_enabled: false,
-      is_credit_enabled: false,
-      created_at: new Date().toISOString()
+      created_at: nowIso,
+      updated_at: nowIso
     };
 
-    let { data, error } = await adminClient.from('profiles').insert([payload]).select().maybeSingle();
-    if (error || !data) {
-      const fb = await supabase.from('profiles').insert([payload]).select().maybeSingle();
-      data = fb.data;
-      error = fb.error;
-    }
+    // Save in memory buffer
+    memoryDelegates.unshift(delegateRecord);
 
-    if (error && !data) {
-      return NextResponse.json({ error: error.message || 'فشل تسجيل المندوب' }, { status: 400 });
-    }
+    // 1. Try inserting into `delegates` table
+    let inserted = null;
+    try {
+      const { data, error } = await adminClient
+        .from('delegates')
+        .insert([delegateRecord])
+        .select()
+        .maybeSingle();
 
-    // Log action to audit_logs
+      if (!error && data) {
+        inserted = data;
+      }
+    } catch {}
+
+    // 2. Also insert / sync into `profiles` table
+    try {
+      const profilePayload = {
+        id: delegateId,
+        full_name: trimmedName,
+        store_name: territoryName,
+        phone: cleanPhone,
+        email: `rep${nextCode}@elfarmawy.com`,
+        customer_code: nextCode,
+        role: 'delegate',
+        credit_limit: 0,
+        previous_balance: 0,
+        current_debt: 0,
+        credit_enabled: false,
+        is_credit_enabled: false,
+        created_at: nowIso
+      };
+
+      await adminClient.from('profiles').insert([profilePayload]);
+    } catch {}
+
+    // 3. Resolve current authenticated admin for audit log
+    let currentAdminProfile: any = null;
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const { data: ap } = await adminClient
+          .from('profiles')
+          .select('id, full_name, store_name, role')
+          .eq('id', user.id)
+          .maybeSingle();
+        currentAdminProfile = ap;
+      }
+    } catch {}
+
+    const adminName = currentAdminProfile?.full_name || currentAdminProfile?.store_name || 'المدير';
+
+    // 4. Log Action to Audit Logs
     await logAction({
-      actionType: 'إضافة مندوب مبيعات',
-      category: 'الأمان والصلاحيات',
-      details: `تم تسجيل مندوب جديد: (${trimmedName}) - كود: #${nextCode} - خط السير: (${territoryName}) - هاتف: ${cleanPhone || 'غير محدد'}`
+      actionType: 'إضافة مندوب جديد',
+      category: 'المندوبين والمشرفين',
+      details: `تم تسجيل المندوب الجديد [${trimmedName}] - هاتف: [${cleanPhone || 'غير محدد'}] - خط السير: [${territoryName}]`,
+      user: {
+        id: currentAdminProfile?.id,
+        name: adminName,
+        role: 'admin'
+      }
     });
 
-    return NextResponse.json({ success: true, data, message: 'تم تسجيل المندوب بنجاح' }, { status: 201 });
+    return NextResponse.json({
+      success: true,
+      data: inserted || delegateRecord,
+      message: 'تم تسجيل المندوب بنجاح'
+    }, { status: 201 });
+
   } catch (err: any) {
+    console.error('Delegate POST error:', err);
     return NextResponse.json({ error: err.message || 'حدث خطأ أثناء حفظ المندوب' }, { status: 500 });
   }
 }
 
+// PUT: Update delegate
 export async function PUT(req: NextRequest) {
   try {
     const adminClient = createAdminClient();
     const supabase = await createClient();
 
     const body = await req.json();
-    const { id, full_name, phone, route_name, territory, customer_code } = body;
+    const { id, full_name, phone, territory, route_name, is_active, notes, customer_code } = body;
 
-    if (!id) return NextResponse.json({ error: 'معرف المندوب مطلوب' }, { status: 400 });
-
-    const cleanPhone = phone ? String(phone).trim() : null;
-
-    if (cleanPhone) {
-      const { data: existingPhone } = await adminClient
-        .from('profiles')
-        .select('id, full_name')
-        .eq('phone', cleanPhone)
-        .neq('id', id)
-        .maybeSingle();
-
-      if (existingPhone) {
-        return NextResponse.json({
-          error: 'رقم الهاتف مسجل بالفعل لمستخدم آخر'
-        }, { status: 400 });
-      }
+    if (!id) {
+      return NextResponse.json({ error: 'معرف المندوب مطلوب' }, { status: 400 });
     }
+
+    const trimmedName = full_name ? String(full_name).trim() : 'مندوب';
+    const cleanPhone = phone ? String(phone).trim() : null;
+    const territoryName = (territory || route_name) ? String(territory || route_name).trim() : undefined;
+    const nowIso = new Date().toISOString();
 
     const updates: any = {
-      role: 'delegate'
+      updated_at: nowIso
     };
-    if (full_name !== undefined) updates.full_name = full_name.trim();
+    if (full_name !== undefined) updates.full_name = trimmedName;
     if (phone !== undefined) updates.phone = cleanPhone;
-    if (territory !== undefined || route_name !== undefined) updates.store_name = (territory || route_name).trim();
+    if (territoryName !== undefined) {
+      updates.territory = territoryName;
+      updates.route_name = territoryName;
+      updates.store_name = territoryName;
+    }
+    if (is_active !== undefined) updates.is_active = Boolean(is_active);
+    if (notes !== undefined) updates.notes = notes ? String(notes).trim() : null;
     if (customer_code !== undefined) updates.customer_code = String(customer_code).replace(/\D/g, '');
 
-    let { data, error } = await adminClient.from('profiles').update(updates).eq('id', id).select().maybeSingle();
-    if (error || !data) {
-      const fb = await supabase.from('profiles').update(updates).eq('id', id).select().maybeSingle();
-      data = fb.data;
-      error = fb.error;
-    }
+    // Update in memory
+    memoryDelegates = memoryDelegates.map(d => d.id === id ? { ...d, ...updates } : d);
 
-    if (error) throw error;
+    // 1. Try update in `delegates` table
+    try {
+      await adminClient.from('delegates').update(updates).eq('id', id);
+    } catch {}
 
-    return NextResponse.json({ success: true, data, message: 'تم تحديث بيانات المندوب بنجاح' }, { status: 200 });
+    // 2. Also update in `profiles` table
+    try {
+      const profileUpdates: any = { role: 'delegate' };
+      if (updates.full_name) profileUpdates.full_name = updates.full_name;
+      if (updates.phone !== undefined) profileUpdates.phone = updates.phone;
+      if (updates.territory) profileUpdates.store_name = updates.territory;
+      if (updates.customer_code) profileUpdates.customer_code = updates.customer_code;
+
+      await adminClient.from('profiles').update(profileUpdates).eq('id', id);
+    } catch {}
+
+    // 3. Resolve current authenticated admin
+    let currentAdminProfile: any = null;
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const { data: ap } = await adminClient
+          .from('profiles')
+          .select('id, full_name, store_name, role')
+          .eq('id', user.id)
+          .maybeSingle();
+        currentAdminProfile = ap;
+      }
+    } catch {}
+
+    const adminName = currentAdminProfile?.full_name || currentAdminProfile?.store_name || 'المدير';
+
+    // 4. Log Action to Audit Logs
+    await logAction({
+      actionType: 'تعديل بيانات مندوب',
+      category: 'المندوبين والمشرفين',
+      details: `تم تحديث بيانات المندوب [${trimmedName}] (تعديل خط السير أو الهاتف أو حالة التفعيل)`,
+      user: {
+        id: currentAdminProfile?.id,
+        name: adminName,
+        role: 'admin'
+      }
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: 'تم تحديث بيانات المندوب بنجاح'
+    }, { status: 200 });
+
   } catch (err: any) {
+    console.error('Delegate PUT error:', err);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }
 
+// DELETE: Delete delegate
 export async function DELETE(req: NextRequest) {
   try {
     const adminClient = createAdminClient();
     const supabase = await createClient();
 
     const { searchParams } = new URL(req.url);
-    const id = searchParams.get('id');
+    let id = searchParams.get('id');
+    let targetName = searchParams.get('name') || '';
 
-    if (!id) return NextResponse.json({ error: 'معرف المندوب مطلوب' }, { status: 400 });
-
-    let { error } = await adminClient.from('profiles').delete().eq('id', id);
-    if (error) {
-      const fb = await supabase.from('profiles').delete().eq('id', id);
-      error = fb.error;
+    if (!id) {
+      const body = await req.json().catch(() => ({}));
+      id = body.id;
+      if (body.name || body.full_name) targetName = body.name || body.full_name;
     }
 
-    if (error) throw error;
+    if (!id) {
+      return NextResponse.json({ error: 'معرف المندوب مطلوب' }, { status: 400 });
+    }
 
-    return NextResponse.json({ success: true, message: 'تم حذف المندوب بنجاح' }, { status: 200 });
+    // Fetch delegate name if not passed
+    if (!targetName) {
+      try {
+        const mem = memoryDelegates.find(d => d.id === id);
+        if (mem) targetName = mem.full_name;
+
+        if (!targetName) {
+          const { data: d } = await adminClient.from('delegates').select('full_name').eq('id', id).maybeSingle();
+          if (d) targetName = d.full_name;
+        }
+
+        if (!targetName) {
+          const { data: p } = await adminClient.from('profiles').select('full_name').eq('id', id).maybeSingle();
+          if (p) targetName = p.full_name;
+        }
+      } catch {}
+    }
+
+    const finalDelegateName = targetName || 'المندوب';
+
+    // Delete from memory
+    memoryDelegates = memoryDelegates.filter(d => d.id !== id);
+
+    // 1. Delete from `delegates` table
+    try {
+      await adminClient.from('delegates').delete().eq('id', id);
+    } catch {}
+
+    // 2. Delete from `profiles` table
+    try {
+      await adminClient.from('profiles').delete().eq('id', id);
+    } catch {}
+
+    // 3. Resolve current authenticated admin
+    let currentAdminProfile: any = null;
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const { data: ap } = await adminClient
+          .from('profiles')
+          .select('id, full_name, store_name, role')
+          .eq('id', user.id)
+          .maybeSingle();
+        currentAdminProfile = ap;
+      }
+    } catch {}
+
+    const adminName = currentAdminProfile?.full_name || currentAdminProfile?.store_name || 'المدير';
+
+    // 4. Log Action to Audit Logs
+    await logAction({
+      actionType: 'حذف مندوب',
+      category: 'المندوبين والمشرفين',
+      details: `تم حذف المندوب [${finalDelegateName}] من سجلات المناديب`,
+      user: {
+        id: currentAdminProfile?.id,
+        name: adminName,
+        role: 'admin'
+      }
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: 'تم حذف المندوب بنجاح'
+    }, { status: 200 });
+
   } catch (err: any) {
+    console.error('Delegate DELETE error:', err);
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }

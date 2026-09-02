@@ -6,6 +6,7 @@ export type AuditCategory =
   | 'المشتريات والموردين'
   | 'الخزينة والتحصيلات'
   | 'الأجل والعملاء'
+  | 'المندوبين والمشرفين'
   | 'الأمان والصلاحيات'
   | 'عام وعمليات أخرى'
   | 'عام';
@@ -43,6 +44,11 @@ export function normalizeCategory(cat: string): string {
     case 'customers':
     case 'credit':
       return 'الأجل والعملاء';
+    case 'المندوبين والمشرفين':
+    case 'المندوبين':
+    case 'delegates':
+    case 'reps':
+      return 'المندوبين والمشرفين';
     case 'الأمان والصلاحيات':
     case 'security':
     case 'permissions':
