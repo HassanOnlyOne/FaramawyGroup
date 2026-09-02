@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { useToast } from '@/components/ui/toast';
 import { useNumberFormat } from '@/context/number-format-context';
-import { Users, Plus, Search, ShieldCheck, Phone, MapPin, Edit, Eye, EyeOff, Key, Loader2, CheckCircle2 } from 'lucide-react';
+import { Users, Search, ShieldCheck, Phone, Edit, Eye, EyeOff, Key, Loader2 } from 'lucide-react';
 
 export default function CustomersPage() {
   const { toast } = useToast();
@@ -89,7 +89,7 @@ export default function CustomersPage() {
         const json = await custRes.json();
         const rawCusts = json.data || json.customers || [];
         
-        // Calculate dynamic live debt per customer (Gross Invoices - Total Payments)
+        // Calculate dynamic live debt per customer (Gross Credit Invoices - Total Payments)
         const enriched = rawCusts.map((c: any) => {
           const custCode = String(c.customer_code || '').replace(/\D/g, '');
           const customerOrders = ordList.filter((o: any) => 
@@ -111,7 +111,11 @@ export default function CustomersPage() {
           const liveOrderDebt = customerOrders
             .filter((o: any) => !['cancelled', 'returned'].includes(o.status))
             .reduce((sum: number, o: any) => {
-              const rem = Number(o.remaining_amount !== undefined ? o.remaining_amount : (o.payment_method === 'credit' ? (o.total || o.total_amount || 0) : 0));
+              const isCredit = o.payment_method === 'credit';
+              const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
+              const ordPaid = Number(o.paid_amount || 0);
+              const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, ordTotal - ordPaid) : 0));
+              if (!isCredit && rem <= 0) return sum;
               return sum + rem;
             }, 0);
 

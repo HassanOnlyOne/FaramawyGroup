@@ -233,7 +233,7 @@ export async function POST(req: NextRequest) {
     const calculatedTotal = passedTotal !== undefined ? Number(passedTotal) : (total_amount ? Number(total_amount) : (subtotal - discount));
     const total = Number(calculatedTotal);
     
-    const prevBalance = previous_balance !== undefined ? Number(previous_balance) : Number(customerProfile?.previous_balance || 0);
+    const prevBalance = Number(customerProfile?.current_debt !== undefined && customerProfile?.current_debt !== null ? customerProfile.current_debt : (customerProfile?.previous_balance || 0));
     const method = (payment_method === 'credit' || payment_method === 'آجل' || payment_method === 'credit_payment') ? 'credit' : 'cash';
 
     // 2. Strict Credit Validation for credit payment method
@@ -246,7 +246,7 @@ export async function POST(req: NextRequest) {
       }
 
       const creditLimit = Number(customerProfile?.credit_limit || 0);
-      const currentDebt = Number(customerProfile?.current_debt !== undefined && customerProfile?.current_debt !== null ? customerProfile.current_debt : (customerProfile?.previous_balance || 0));
+      const currentDebt = prevBalance;
       const availableCredit = creditLimit - currentDebt;
 
       if (total > availableCredit) {
@@ -256,9 +256,15 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const cashAdvance = method === 'credit' ? Math.min(total, Math.max(0, Number(paid_amount || 0))) : 0;
-    const creditAddition = method === 'credit' ? Math.max(0, total - cashAdvance) : 0;
-    const finalRemaining = remaining_amount !== undefined ? Number(remaining_amount) : creditAddition;
+    // Cash orders have paid_amount = total and remaining_amount = 0 (0 debt added)
+    const finalPaid = method === 'cash' 
+      ? total 
+      : Math.min(total, Math.max(0, Number(paid_amount || 0)));
+    
+    const finalRemaining = method === 'cash' 
+      ? 0 
+      : Math.max(0, total - finalPaid);
+
     const finalNotes = customer_notes || order_notes || '';
 
     // Pure sequential numeric invoice/order number starting from 10000
@@ -273,6 +279,7 @@ export async function POST(req: NextRequest) {
       subtotal: subtotal || total,
       discount,
       total,
+      total_amount: total,
       delivery_address: delivery_address || shipping_address || customerProfile?.address || '',
       contact_phone: contactPhoneClean(contact_phone || customerProfile?.phone || ''),
       customer_notes: finalNotes,
@@ -281,7 +288,7 @@ export async function POST(req: NextRequest) {
       store_name_ref: store_name || customer_name || customerProfile?.store_name || 'المخزن الرئيسي',
       delegate_name: delegate_name || '',
       previous_balance: prevBalance,
-      paid_amount: cashAdvance,
+      paid_amount: finalPaid,
       remaining_amount: finalRemaining,
       current_balance: method === 'credit' ? (prevBalance + finalRemaining) : prevBalance,
       stock_deducted: false
@@ -334,13 +341,14 @@ export async function POST(req: NextRequest) {
         subtotal: subtotal || total,
         discount: 0,
         total: total,
+        total_amount: total,
         delivery_address: delivery_address || shipping_address || '',
         contact_phone: contactPhoneClean(contact_phone || ''),
         customer_notes: finalNotes,
         store_code: '1',
         store_name_ref: store_name || customer_name || 'المخزن الرئيسي',
         previous_balance: prevBalance,
-        paid_amount: cashAdvance,
+        paid_amount: finalPaid,
         remaining_amount: finalRemaining,
         current_balance: method === 'credit' ? (prevBalance + finalRemaining) : prevBalance,
         stock_deducted: false
@@ -373,17 +381,27 @@ export async function POST(req: NextRequest) {
       await adminClient.from('order_items').insert(formattedOrderItems);
     }
 
-    // Update customer previous_balance in profiles
+    // Update customer current_debt in profiles ONLY if method is credit and remaining > 0
     if (customerId && method === 'credit' && finalRemaining > 0) {
-      const newBalance = prevBalance + finalRemaining;
-      await adminClient.from('profiles').update({ previous_balance: newBalance }).eq('id', customerId);
+      const newDebt = prevBalance + finalRemaining;
+      try {
+        await adminClient.from('profiles').update({
+          previous_balance: newDebt,
+          current_debt: newDebt,
+          debt_balance: newDebt
+        }).eq('id', customerId);
+      } catch {
+        await adminClient.from('profiles').update({
+          previous_balance: newDebt
+        }).eq('id', customerId);
+      }
     }
 
     // Log in audit log
     await logAction({
       actionType: 'إنشاء طلب جديد',
       category: 'المبيعات والفواتير',
-      details: `تسجيل طلب بيع جديد #${nextInvoiceNumber} للعميل (${customerProfile?.store_name || customerProfile?.full_name || customer_name || customerId}) بإجمالي ${total} ج.م - طريقة الدفع: ${method === 'credit' ? 'أجل' : 'كاش'}`,
+      details: `تسجيل طلب بيع جديد #${nextInvoiceNumber} للعميل (${customerProfile?.store_name || customerProfile?.full_name || customer_name || customerId}) بإجمالي ${total} ج.م - طريقة الدفع: ${method === 'credit' ? 'أجل' : 'كاش نقدي'}`,
       user: {
         id: user?.id || customerId,
         name: customerProfile?.store_name || customerProfile?.full_name || customer_name || 'عميل المتجر',

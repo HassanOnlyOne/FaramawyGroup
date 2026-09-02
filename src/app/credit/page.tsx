@@ -136,13 +136,15 @@ export default function CreditPage() {
   const creditLimit = Number(profile?.credit_limit || 0);
   const availableCredit = Math.max(0, creditLimit - currentDebt);
 
-  // Credit orders list
+  // Credit orders list (Strictly excluding pure cash orders with remaining_amount 0)
   const safeOrders = Array.isArray(orders) ? orders : [];
   const creditWithdrawals = safeOrders.filter((o: any) => {
+    if (['cancelled', 'returned'].includes(o.status)) return false;
+    const isCredit = o.payment_method === 'credit';
     const tot = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
     const paid = Number(o.paid_amount || 0);
-    const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : Math.max(0, tot - paid));
-    return rem > 0 || o.payment_method === 'credit' || tot > paid;
+    const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, tot - paid) : 0));
+    return isCredit || rem > 0;
   });
 
   const contactPhone = BRAND.contacts[0] || '01066918217';

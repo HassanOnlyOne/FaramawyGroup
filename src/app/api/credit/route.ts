@@ -85,9 +85,11 @@ export async function GET(req: NextRequest) {
 
     if (matchedOrders.length === 0 && safeAllOrders.length > 0) {
       matchedOrders = safeAllOrders.filter((o: any) => {
+        const isCredit = o.payment_method === 'credit';
         const t = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
         const p = Number(o.paid_amount || 0);
-        return t > p || o.payment_method === 'credit';
+        const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, t - p) : 0));
+        return isCredit || rem > 0;
       });
     }
 
@@ -121,34 +123,39 @@ export async function GET(req: NextRequest) {
 
     const totalPaidSum = customerPayments.reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
 
-    // Calculate actual updated outstanding debt (Gross - Payments)
+    // Calculate actual outstanding debt from credit orders ONLY minus customer payments
     const grossDebt = activeOrders.reduce((sum: number, o: any) => {
+      const isCredit = o.payment_method === 'credit';
       const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
       const ordPaid = Number(o.paid_amount || 0);
-      const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : Math.max(0, ordTotal - ordPaid));
+      const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, ordTotal - ordPaid) : 0));
+      
+      // Strict Cash Exclusion: pure cash orders with remaining 0 are excluded
+      if (!isCredit && rem <= 0) return sum;
       return sum + rem;
     }, 0);
 
     const directProfileDebt = Number(profile.current_debt !== undefined && profile.current_debt !== null ? profile.current_debt : (profile.previous_balance || 0));
-    const currentDebt = grossDebt > 0 
-      ? Math.max(0, grossDebt - totalPaidSum) 
-      : directProfileDebt;
+    const currentDebt = directProfileDebt !== 0 ? directProfileDebt : (grossDebt > 0 ? Math.max(0, grossDebt - totalPaidSum) : 0);
 
     const creditLimit = Number(profile.credit_limit || 0);
     const availableCredit = Math.max(0, creditLimit - currentDebt);
 
-    // List of credit orders
+    // List of credit orders (exclusively credit or orders with remaining debt)
     const creditWithdrawals = matchedOrders
       .filter((o: any) => {
+        if (['cancelled', 'returned'].includes(o.status)) return false;
+        const isCredit = o.payment_method === 'credit';
         const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
         const ordPaid = Number(o.paid_amount || 0);
-        const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : Math.max(0, ordTotal - ordPaid));
-        return rem > 0 || o.payment_method === 'credit' || ordTotal > ordPaid;
+        const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, ordTotal - ordPaid) : 0));
+        return isCredit || rem > 0;
       })
       .map((o: any) => {
+        const isCredit = o.payment_method === 'credit';
         const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
         const ordPaid = Number(o.paid_amount || 0);
-        const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : Math.max(0, ordTotal - ordPaid));
+        const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, ordTotal - ordPaid) : 0));
         const invNumber = o.invoice_no || o.order_number || `1000${String(o.id).slice(0, 3)}`;
         return {
           id: o.id,
@@ -157,7 +164,7 @@ export async function GET(req: NextRequest) {
           total: ordTotal,
           paid_amount: ordPaid,
           remaining_amount: rem,
-          payment_method: o.payment_method || (rem > 0 ? 'credit' : 'cash'),
+          payment_method: 'credit',
           status: o.status || 'completed',
           created_at: o.created_at
         };

@@ -64,7 +64,6 @@ export async function PATCH(
     // تجميع كميات الأصناف في Map فريد تماماً
     const uniqueProductQuantities = new Map<string, number>();
     if (rawItems && rawItems.length > 0) {
-      // تفادي تكرار السطور بنفس الـ id
       const seenItemIds = new Set<string>();
       for (const item of rawItems) {
         if (!seenItemIds.has(item.id)) {
@@ -155,30 +154,49 @@ export async function PATCH(
       updatedOrder = { ...order, status, stock_deducted: willBeDeducted };
     }
 
-    // إعادة احتساب مديونية العميل
+    // إعادة احتساب مديونية العميل بدقة: مجموع المتبقي من فواتير الآجل غير الملغية فقط - مجموع التحصيلات
     if (order.customer_id) {
-      const { data: customerOrders } = await adminClient
-        .from('orders')
-        .select('id, total, total_amount, paid_amount, remaining_amount, payment_method, status')
-        .eq('customer_id', order.customer_id);
+      const [ordRes, payRes] = await Promise.all([
+        adminClient
+          .from('orders')
+          .select('id, total, total_amount, paid_amount, remaining_amount, payment_method, status')
+          .eq('customer_id', order.customer_id),
+        adminClient
+          .from('customer_payments')
+          .select('amount')
+          .eq('customer_id', order.customer_id)
+      ]);
 
-      if (customerOrders) {
-        const totalCustomerDebt = customerOrders
-          .filter((o: any) => {
-            const ordStatus = o.id === targetOrderId ? status : o.status;
-            return !['cancelled', 'returned'].includes(ordStatus);
-          })
-          .reduce((sum: number, o: any) => {
-            const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
-            const ordPaid = Number(o.paid_amount || 0);
-            const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : Math.max(0, ordTotal - ordPaid));
-            return sum + rem;
-          }, 0);
+      const customerOrders = ordRes.data || [];
+      const customerPayments = payRes.data || [];
+      const totalPaymentsSum = customerPayments.reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
 
+      const totalCreditOrdersDebt = customerOrders
+        .filter((o: any) => {
+          const ordStatus = o.id === targetOrderId ? status : o.status;
+          return !['cancelled', 'returned'].includes(ordStatus);
+        })
+        .reduce((sum: number, o: any) => {
+          const isCredit = o.payment_method === 'credit';
+          const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
+          const ordPaid = Number(o.paid_amount || 0);
+          const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, ordTotal - ordPaid) : 0));
+          
+          if (!isCredit && rem <= 0) return sum;
+          return sum + rem;
+        }, 0);
+
+      const netDebt = Math.max(0, totalCreditOrdersDebt - totalPaymentsSum);
+
+      try {
         await adminClient.from('profiles').update({
-          previous_balance: totalCustomerDebt,
-          current_debt: totalCustomerDebt,
-          debt_balance: totalCustomerDebt
+          previous_balance: netDebt,
+          current_debt: netDebt,
+          debt_balance: netDebt
+        }).eq('id', order.customer_id);
+      } catch {
+        await adminClient.from('profiles').update({
+          previous_balance: netDebt
         }).eq('id', order.customer_id);
       }
     }

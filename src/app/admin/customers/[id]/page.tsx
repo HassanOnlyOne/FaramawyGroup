@@ -200,23 +200,28 @@ export default function CustomerLedgerPage() {
 
   const custCodeClean = customer.customer_code ? String(customer.customer_code).replace(/\D/g, '') : (customer.id ? String(customer.id).slice(-4) : '1004');
 
-  // 1. Map Orders to Statement Events
+  // 1. Map Orders to Statement Events (Excluding pure cash orders with 0 remaining debt)
   const statementEvents: any[] = [];
 
   orders.forEach(o => {
-    if (o.status === 'cancelled') return;
+    if (o.status === 'cancelled' || o.status === 'returned') return;
+    
+    const isCredit = o.payment_method === 'credit';
     const total = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
     const paid = Number(o.paid_amount || 0);
-    const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : Math.max(0, total - paid));
+    const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, total - paid) : 0));
     
+    // Strict Cash Exclusion: pure cash orders with remaining_amount === 0 are excluded from debt statement!
+    if (!isCredit && rem <= 0) return;
+
     const invNo = o.invoice_no || o.order_number || String(o.id).slice(0, 8);
     const cleanInv = String(invNo).replace(/\D/g, '') || invNo;
-    const debitAmount = o.payment_method === 'credit' ? (rem > 0 ? rem : total) : (rem > 0 ? rem : total);
+    const debitAmount = rem > 0 ? rem : total;
 
     statementEvents.push({
       id: o.id,
       date: new Date(o.created_at),
-      type: 'فاتورة توريد',
+      type: 'فاتورة توريد (آجل)',
       ref: `فاتورة #${formatNumber(cleanInv)}`,
       notes: paid > 0 ? `إجمالي الفاتورة ${formatPriceShort(total)} (مسدد كاش ${formatPriceShort(paid)})` : `فاتورة توريد بضاعة لحساب الأجل`,
       debit: debitAmount,
@@ -254,11 +259,26 @@ export default function CustomerLedgerPage() {
   // 4. Reverse to show newest movements on top for preview and print
   const displayLedgerRows = [...ledgerRowsWithBalance].reverse();
 
-  // Primary Debt: Always exact from profile.current_debt (or previous_balance)
+  // Top Card Debt: Sum of (remaining_amount for credit orders) - sum of (customer_payments)
+  const totalCustomerPayments = payments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
+  
+  const totalCreditOrdersDebt = orders
+    .filter(o => o.status !== 'cancelled' && o.status !== 'returned')
+    .reduce((sum, o) => {
+      const isCredit = o.payment_method === 'credit';
+      const tot = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
+      const pd = Number(o.paid_amount || 0);
+      const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, tot - pd) : 0));
+      if (!isCredit && rem <= 0) return sum;
+      return sum + rem;
+    }, 0);
+
+  const calculatedNetDebt = Math.max(0, totalCreditOrdersDebt - totalCustomerPayments);
+
   const currentDebtFromProfile = Number(
     customer.current_debt !== undefined && customer.current_debt !== null 
       ? customer.current_debt 
-      : (customer.previous_balance || 0)
+      : calculatedNetDebt
   );
 
   return (
@@ -343,7 +363,7 @@ export default function CustomerLedgerPage() {
           <div className="p-5 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 flex justify-between items-center">
             <h2 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
               <FileText className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
-              <span>كشف حساب تفصيلي (Statement of Account)</span>
+              <span>كشف حساب تفصيلي للمسحوبات الآجلة والتحصيلات</span>
             </h2>
             <span className="text-xs font-bold text-slate-500 dark:text-slate-400">عدد الحركات: {formatNumber(displayLedgerRows.length)}</span>
           </div>
@@ -355,7 +375,7 @@ export default function CustomerLedgerPage() {
                   <th className="p-4 whitespace-nowrap">نوع الحركة</th>
                   <th className="p-4 whitespace-nowrap">رقم المرجع</th>
                   <th className="p-4 whitespace-nowrap">البيان والملاحظات</th>
-                  <th className="p-4 whitespace-nowrap text-red-600 dark:text-red-400">مدين (+) / مسحوبات</th>
+                  <th className="p-4 whitespace-nowrap text-red-600 dark:text-red-400">مدين (+) / مسحوبات آجل</th>
                   <th className="p-4 whitespace-nowrap text-emerald-600 dark:text-emerald-400">دائن (-) / سداد نقدي</th>
                   <th className="p-4 whitespace-nowrap">الرصيد المتبقي</th>
                 </tr>
@@ -363,7 +383,7 @@ export default function CustomerLedgerPage() {
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                 {displayLedgerRows.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="p-8 text-center text-slate-500 dark:text-slate-400 font-medium">لا توجد حركات مالية مسجلة لهذا العميل حتى الآن</td>
+                    <td colSpan={7} className="p-8 text-center text-slate-500 dark:text-slate-400 font-medium">لا توجد مسحوبات آجلة أو سندات تحصيل مسجلة لهذا العميل حتى الآن</td>
                   </tr>
                 ) : (
                   displayLedgerRows.map((row, idx) => (

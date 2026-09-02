@@ -183,9 +183,14 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
     }
 
     const finalTotal = total_amount !== undefined ? Number(total_amount) : (total !== undefined ? Number(total) : Math.max(0, subtotal + shipFee - discFee));
-    const finalPaid = paid_amount !== undefined ? Number(paid_amount) : Number(existingOrder.paid_amount || 0);
-    const finalRemaining = remaining_amount !== undefined ? Number(remaining_amount) : (remaining_credit_amount !== undefined ? Number(remaining_credit_amount) : Math.max(0, finalTotal - finalPaid));
-    const finalMethod = payment_method || (finalRemaining > 0 ? 'credit' : (existingOrder.payment_method || 'cash'));
+    
+    // Determine payment method and clean paid/remaining
+    const specifiedMethod = payment_method || existingOrder.payment_method || 'cash';
+    const isCash = specifiedMethod === 'cash';
+
+    const finalPaid = isCash ? finalTotal : (paid_amount !== undefined ? Number(paid_amount) : Number(existingOrder.paid_amount || 0));
+    const finalRemaining = isCash ? 0 : (remaining_amount !== undefined ? Number(remaining_amount) : (remaining_credit_amount !== undefined ? Number(remaining_credit_amount) : Math.max(0, finalTotal - finalPaid)));
+    const finalMethod = isCash ? 'cash' : 'credit';
 
     const updatePayload: any = {
       subtotal,
@@ -233,35 +238,48 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
     // Cumulative recalculation of customer debt in profiles
     const targetCustomerId = existingOrder.customer_id;
     if (targetCustomerId) {
-      const { data: customerOrders } = await adminClient
-        .from('orders')
-        .select('id, total, total_amount, paid_amount, remaining_amount, payment_method, status')
-        .eq('customer_id', targetCustomerId);
+      const [ordRes, payRes] = await Promise.all([
+        adminClient
+          .from('orders')
+          .select('id, total, total_amount, paid_amount, remaining_amount, payment_method, status')
+          .eq('customer_id', targetCustomerId),
+        adminClient
+          .from('customer_payments')
+          .select('amount')
+          .eq('customer_id', targetCustomerId)
+      ]);
 
-      if (customerOrders) {
-        const totalCustomerDebt = customerOrders
-          .filter((o: any) => !['cancelled', 'returned'].includes(o.status))
-          .reduce((sum: number, o: any) => {
-            if (o.id === targetOrderId) {
-              return sum + finalRemaining;
-            }
-            const ordTotal = Number(o.total || o.total_amount || 0);
-            const ordPaid = Number(o.paid_amount || 0);
-            const rem = o.remaining_amount !== null && o.remaining_amount !== undefined ? Number(o.remaining_amount) : Math.max(0, ordTotal - ordPaid);
-            return sum + rem;
-          }, 0);
+      const customerOrders = ordRes.data || [];
+      const customerPayments = payRes.data || [];
+      const totalPaymentsSum = customerPayments.reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
 
-        try {
-          await adminClient.from('profiles').update({
-            previous_balance: totalCustomerDebt,
-            current_debt: totalCustomerDebt,
-            debt_balance: totalCustomerDebt
-          }).eq('id', targetCustomerId);
-        } catch {
-          await adminClient.from('profiles').update({
-            previous_balance: totalCustomerDebt
-          }).eq('id', targetCustomerId);
-        }
+      const totalCreditOrdersDebt = customerOrders
+        .filter((o: any) => !['cancelled', 'returned'].includes(o.status))
+        .reduce((sum: number, o: any) => {
+          if (o.id === targetOrderId) {
+            return sum + finalRemaining;
+          }
+          const isCredit = o.payment_method === 'credit';
+          const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
+          const ordPaid = Number(o.paid_amount || 0);
+          const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, ordTotal - ordPaid) : 0));
+          
+          if (!isCredit && rem <= 0) return sum;
+          return sum + rem;
+        }, 0);
+
+      const netDebt = Math.max(0, totalCreditOrdersDebt - totalPaymentsSum);
+
+      try {
+        await adminClient.from('profiles').update({
+          previous_balance: netDebt,
+          current_debt: netDebt,
+          debt_balance: netDebt
+        }).eq('id', targetCustomerId);
+      } catch {
+        await adminClient.from('profiles').update({
+          previous_balance: netDebt
+        }).eq('id', targetCustomerId);
       }
     }
 

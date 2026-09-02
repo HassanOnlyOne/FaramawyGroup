@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { logAction, logActivity } from '@/lib/audit';
+import { logAction } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -53,7 +53,7 @@ export async function GET(
   }
 }
 
-async function handleOrderUpdate(req: NextRequest, id: string) {
+async function handleAdminOrderUpdate(req: NextRequest, id: string) {
   try {
     const adminClient = createAdminClient();
     const supabase = await createClient();
@@ -111,7 +111,7 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
 
     let subtotal = 0;
     if (Array.isArray(items)) {
-      // 1. Stock Adjustment for Edit Order Items if order was already completed/deducted
+      // Differential Stock Adjustment for Edit Order Items if order was already completed/deducted
       if (isCompletedOrDeducted && Array.isArray(existingOrder.order_items)) {
         const oldQtyMap = new Map<string, number>();
         for (const oldIt of existingOrder.order_items) {
@@ -147,8 +147,6 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
 
             if (product) {
               const currentStock = Number(product.stock_quantity || 0);
-              // If diff > 0 (quantity increased/new item): deduct diff
-              // If diff < 0 (quantity decreased/item removed): restore abs(diff)
               const newStock = Math.max(0, currentStock - diff);
               await adminClient
                 .from('products')
@@ -186,9 +184,14 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
     }
 
     const finalTotal = total_amount !== undefined ? Number(total_amount) : (total !== undefined ? Number(total) : Math.max(0, subtotal + shipFee - discFee));
-    const finalPaid = paid_amount !== undefined ? Number(paid_amount) : Number(existingOrder.paid_amount || 0);
-    const finalRemaining = remaining_amount !== undefined ? Number(remaining_amount) : (remaining_credit_amount !== undefined ? Number(remaining_credit_amount) : Math.max(0, finalTotal - finalPaid));
-    const finalMethod = payment_method || (finalRemaining > 0 ? 'credit' : (existingOrder.payment_method || 'cash'));
+    
+    // Determine payment method and clean paid/remaining
+    const specifiedMethod = payment_method || existingOrder.payment_method || 'cash';
+    const isCash = specifiedMethod === 'cash';
+
+    const finalPaid = isCash ? finalTotal : (paid_amount !== undefined ? Number(paid_amount) : Number(existingOrder.paid_amount || 0));
+    const finalRemaining = isCash ? 0 : (remaining_amount !== undefined ? Number(remaining_amount) : (remaining_credit_amount !== undefined ? Number(remaining_credit_amount) : Math.max(0, finalTotal - finalPaid)));
+    const finalMethod = isCash ? 'cash' : 'credit';
 
     const updatePayload: any = {
       subtotal,
@@ -236,44 +239,58 @@ async function handleOrderUpdate(req: NextRequest, id: string) {
     // Cumulative recalculation of customer debt in profiles
     const targetCustomerId = existingOrder.customer_id;
     if (targetCustomerId) {
-      const { data: customerOrders } = await adminClient
-        .from('orders')
-        .select('id, total, total_amount, paid_amount, remaining_amount, payment_method, status')
-        .eq('customer_id', targetCustomerId);
+      const [ordRes, payRes] = await Promise.all([
+        adminClient
+          .from('orders')
+          .select('id, total, total_amount, paid_amount, remaining_amount, payment_method, status')
+          .eq('customer_id', targetCustomerId),
+        adminClient
+          .from('customer_payments')
+          .select('amount')
+          .eq('customer_id', targetCustomerId)
+      ]);
 
-      if (customerOrders) {
-        const totalCustomerDebt = customerOrders
-          .filter((o: any) => !['cancelled', 'returned'].includes(o.status))
-          .reduce((sum: number, o: any) => {
-            if (o.id === targetOrderId) {
-              return sum + finalRemaining;
-            }
-            const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
-            const ordPaid = Number(o.paid_amount || 0);
-            const rem = o.remaining_amount !== null && o.remaining_amount !== undefined ? Number(o.remaining_amount) : Math.max(0, ordTotal - ordPaid);
-            return sum + rem;
-          }, 0);
+      const customerOrders = ordRes.data || [];
+      const customerPayments = payRes.data || [];
+      const totalPaymentsSum = customerPayments.reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
 
-        try {
-          await adminClient.from('profiles').update({
-            previous_balance: totalCustomerDebt,
-            current_debt: totalCustomerDebt,
-            debt_balance: totalCustomerDebt
-          }).eq('id', targetCustomerId);
-        } catch {
-          await adminClient.from('profiles').update({
-            previous_balance: totalCustomerDebt
-          }).eq('id', targetCustomerId);
-        }
+      const totalCreditOrdersDebt = customerOrders
+        .filter((o: any) => !['cancelled', 'returned'].includes(o.status))
+        .reduce((sum: number, o: any) => {
+          if (o.id === targetOrderId) {
+            return sum + finalRemaining;
+          }
+          const isCredit = o.payment_method === 'credit';
+          const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
+          const ordPaid = Number(o.paid_amount || 0);
+          const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, ordTotal - ordPaid) : 0));
+          
+          if (!isCredit && rem <= 0) return sum;
+          return sum + rem;
+        }, 0);
+
+      const netDebt = Math.max(0, totalCreditOrdersDebt - totalPaymentsSum);
+
+      try {
+        await adminClient.from('profiles').update({
+          previous_balance: netDebt,
+          current_debt: netDebt,
+          debt_balance: netDebt
+        }).eq('id', targetCustomerId);
+      } catch {
+        await adminClient.from('profiles').update({
+          previous_balance: netDebt
+        }).eq('id', targetCustomerId);
       }
     }
 
-    const orderNum = updatedOrder?.invoice_no || updatedOrder?.order_number || targetOrderId;
-    await logActivity(
-      'تعديل فاتورة مبيعات',
-      `تعديل أصناف وإجمالي الفاتورة #${orderNum} بإجمالي ${finalTotal} ج.م ومتبقي أجل ${finalRemaining} ج.م`,
-      'sales'
-    );
+    // Log the update action in audit logs
+    const invoiceLabel = existingOrder.invoice_no || existingOrder.order_number || targetOrderId;
+    await logAction({
+      actionType: 'تعديل فاتورة/طلب',
+      category: 'المبيعات والفواتير',
+      details: `تم تعديل أصناف وقيم الفاتورة (#${invoiceLabel}) للعميل (${existingOrder.customer?.store_name || existingOrder.customer?.full_name || 'عميل المتجر'}) - الإجمالي الجديد: ${finalTotal} ج.م - طريقة الدفع: ${finalMethod === 'credit' ? 'أجل' : 'كاش'}`
+    });
 
     return NextResponse.json({
       success: true,
@@ -292,7 +309,7 @@ export async function PATCH(
   context: { params: Promise<{ id: string }> }
 ) {
   const { id } = await context.params;
-  return handleOrderUpdate(req, id);
+  return handleAdminOrderUpdate(req, id);
 }
 
 export async function PUT(
@@ -300,7 +317,7 @@ export async function PUT(
   context: { params: Promise<{ id: string }> }
 ) {
   const { id } = await context.params;
-  return handleOrderUpdate(req, id);
+  return handleAdminOrderUpdate(req, id);
 }
 
 export async function DELETE(
@@ -310,55 +327,28 @@ export async function DELETE(
   try {
     const { id } = await context.params;
     const adminClient = createAdminClient();
-    const supabase = await createClient();
 
-    let query = adminClient.from('orders').select('*, customer:profiles(*)');
+    let query = adminClient.from('orders').select('*');
     if (id.startsWith('INV-')) query = query.eq('invoice_no', id);
     else if (id.startsWith('ORD-')) query = query.eq('order_number', id);
     else query = query.or(`id.eq.${id},order_number.eq.${id},invoice_no.eq.${id}`);
 
-    let { data: orderList } = await query;
-    let order = orderList && orderList[0];
+    const { data: list } = await query;
+    const order = list && list[0];
 
-    if (!order) {
-      const fbRes = await supabase.from('orders').select('*, customer:profiles(*)').eq('id', id).maybeSingle();
-      order = fbRes.data;
+    if (order) {
+      await adminClient.from('order_items').delete().eq('order_id', order.id);
+      await adminClient.from('orders').delete().eq('id', order.id);
+
+      await logAction({
+        actionType: 'حذف فاتورة/طلب',
+        category: 'المبيعات والفواتير',
+        details: `تم حذف الفاتورة (#${order.invoice_no || order.order_number || id}) نهائياً من النظام`
+      });
     }
 
-    if (!order) {
-      return NextResponse.json({ success: false, error: 'الطلب غير موجود' }, { status: 404 });
-    }
-
-    const isCancelled = ['cancelled', 'ملغي', 'ملغى'].includes(String(order.status || '').toLowerCase());
-    if (!isCancelled) {
-      return NextResponse.json({ 
-        success: false, 
-        error: 'لا يمكن حذف هذا الطلب لأنه ليس في حالة ملغي. يرجى إلغاء الطلب أولاً قبل حذفه نهائياً.' 
-      }, { status: 400 });
-    }
-
-    const targetOrderId = order.id;
-
-    await adminClient.from('order_items').delete().eq('order_id', targetOrderId);
-
-    const { error: delError } = await adminClient.from('orders').delete().eq('id', targetOrderId);
-    if (delError) {
-      await supabase.from('orders').delete().eq('id', targetOrderId);
-    }
-
-    await logAction({
-      actionType: 'حذف طلب ملغي',
-      category: 'المبيعات والفواتير',
-      details: `تم حذف الطلب الملغي #${order.invoice_no || order.order_number || targetOrderId} نهائياً من قاعدة البيانات`
-    });
-
-    return NextResponse.json({
-      success: true,
-      message: 'تم حذف الطلب الملغي نهائياً بنجاح'
-    }, { status: 200 });
-
+    return NextResponse.json({ success: true, message: 'تم حذف الفاتورة بنجاح' });
   } catch (err: any) {
-    console.error('Delete Order Error:', err);
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });
   }
 }
