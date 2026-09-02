@@ -36,13 +36,49 @@ export default function CheckoutPage() {
         let currentProf: any = null;
 
         if (user) {
-          const { data: p } = await supabase
-            .from('profiles')
-            .select('id, full_name, store_name, phone, address, credit_limit, current_debt, is_credit_enabled, credit_enabled, customer_code')
-            .eq('id', user.id)
-            .maybeSingle();
-          if (p) {
-            currentProf = p;
+          const [profRes, ordRes, payRes] = await Promise.all([
+            supabase
+              .from('profiles')
+              .select('id, full_name, store_name, phone, address, credit_limit, current_debt, is_credit_enabled, credit_enabled, customer_code')
+              .eq('id', user.id)
+              .maybeSingle(),
+            supabase
+              .from('orders')
+              .select('total, total_amount, paid_amount, remaining_amount, payment_method, status')
+              .eq('customer_id', user.id),
+            supabase
+              .from('customer_payments')
+              .select('amount')
+              .eq('customer_id', user.id)
+          ]);
+
+          currentProf = profRes.data;
+
+          const orders = ordRes.data || [];
+          const payments = payRes.data || [];
+          const totalPayments = payments.reduce((sum: number, p: any) => sum + (Number(p.amount) || 0), 0);
+
+          const totalApprovedCreditOrders = orders
+            .filter((o: any) => !['pending', 'cancelled', 'returned'].includes(o.status))
+            .reduce((sum: number, o: any) => {
+              const isCredit = o.payment_method === 'credit';
+              const ordTotal = Number(o.total ?? o.total_amount ?? 0);
+              const ordPaid = Number(o.paid_amount || 0);
+              const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, ordTotal - ordPaid) : 0));
+              if (!isCredit && rem <= 0) return sum;
+              return sum + rem;
+            }, 0);
+
+          const calculatedDebt = Math.max(0, totalApprovedCreditOrders - totalPayments);
+
+          if (currentProf) {
+            const dbDebt = Number(currentProf.current_debt || 0);
+            if (orders.length > 0 || payments.length > 0) {
+              currentProf.current_debt = calculatedDebt;
+              if (dbDebt !== calculatedDebt) {
+                supabase.from('profiles').update({ current_debt: calculatedDebt, previous_balance: calculatedDebt }).eq('id', user.id).then(() => {});
+              }
+            }
           }
         }
 
@@ -74,6 +110,8 @@ export default function CheckoutPage() {
 
           if (!isCreditEligible) {
             setPaymentMethod('cash');
+          } else {
+            setPaymentMethod('credit');
           }
         }
       } catch (err) {

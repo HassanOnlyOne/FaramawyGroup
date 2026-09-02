@@ -128,17 +128,59 @@ export async function GET() {
 
     const todayCollections = todayOrderCashTotal + todayReceiptsTotal;
 
-    // 6. Card: "إجمالي مديونيات العملاء" (Sum current_debt from profiles for debt > 0)
-    const totalReceivables = safeProfiles.reduce((sum: number, p: any) => {
-      const debt = Number(p.current_debt !== undefined && p.current_debt !== null ? p.current_debt : 0);
-      return sum + (debt > 0 ? debt : 0);
-    }, 0);
+    // 6. Card: "إجمالي مديونيات العملاء"
+    // Calculate each customer's exact debt = active approved credit orders remaining - customer payments
+    const paymentsByCustomer = new Map<string, number>();
+    safePayments.forEach((p: any) => {
+      const cid = p.customer_id;
+      if (cid) {
+        paymentsByCustomer.set(cid, (paymentsByCustomer.get(cid) || 0) + Number(p.amount || 0));
+      }
+    });
 
-    // 7. Card: "عملاء الآجل النشطون"
-    const creditCustomersCount = safeProfiles.filter((p: any) => {
-      const debt = Number(p.current_debt !== undefined && p.current_debt !== null ? p.current_debt : 0);
-      return debt > 0;
-    }).length;
+    const activeApprovedOrdersByCustomer = new Map<string, number>();
+    safeOrders
+      .filter((o: any) => !['pending', 'cancelled', 'returned'].includes(o.status))
+      .forEach((o: any) => {
+        const cid = o.customer_id;
+        if (cid) {
+          const isCredit = o.payment_method === 'credit';
+          const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
+          const ordPaid = Number(o.paid_amount || 0);
+          const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, ordTotal - ordPaid) : 0));
+          if (isCredit || rem > 0) {
+            activeApprovedOrdersByCustomer.set(cid, (activeApprovedOrdersByCustomer.get(cid) || 0) + rem);
+          }
+        }
+      });
+
+    let calculatedTotalReceivables = 0;
+    let calculatedCreditCustomersCount = 0;
+
+    for (const prof of safeProfiles) {
+      const cid = prof.id;
+      const orderDebt = activeApprovedOrdersByCustomer.get(cid) || 0;
+      const customerPaid = paymentsByCustomer.get(cid) || 0;
+      
+      let customerNetDebt = 0;
+      if (orderDebt > 0 || customerPaid > 0) {
+        customerNetDebt = Math.max(0, orderDebt - customerPaid);
+        const dbDebt = Number(prof.current_debt || 0);
+        if (dbDebt !== customerNetDebt) {
+          adminClient.from('profiles').update({ current_debt: customerNetDebt, previous_balance: customerNetDebt }).eq('id', cid).then(() => {});
+        }
+      } else {
+        customerNetDebt = Number(prof.current_debt || 0);
+      }
+
+      if (customerNetDebt > 0) {
+        calculatedTotalReceivables += customerNetDebt;
+        calculatedCreditCustomersCount++;
+      }
+    }
+
+    const totalReceivables = calculatedTotalReceivables;
+    const creditCustomersCount = calculatedCreditCustomersCount;
 
     // 8. Card: "مستحقات الموردين (آجل)"
     const totalSupplierPayables = safePurchases.reduce((sum: number, p: any) => {

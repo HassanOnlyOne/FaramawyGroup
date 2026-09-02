@@ -19,18 +19,38 @@ export async function PATCH(
       return NextResponse.json({ error: 'حالة الطلب مطلوبة' }, { status: 400 });
     }
 
-    // جلب الطلب وعناصره
-    const { data: order, error: orderFetchError } = await adminClient
+    // 1. Fetch order by ID, invoice_no, or order_number
+    let { data: order } = await adminClient
       .from('orders')
       .select('*, order_items(*, product:products(*))')
       .eq('id', targetOrderId)
       .maybeSingle();
 
-    if (orderFetchError || !order) {
+    if (!order) {
+      const { data: byInv } = await adminClient
+        .from('orders')
+        .select('*, order_items(*, product:products(*))')
+        .eq('invoice_no', targetOrderId)
+        .maybeSingle();
+      order = byInv;
+    }
+
+    if (!order) {
+      const { data: byOrd } = await adminClient
+        .from('orders')
+        .select('*, order_items(*, product:products(*))')
+        .eq('order_number', targetOrderId)
+        .maybeSingle();
+      order = byOrd;
+    }
+
+    if (!order) {
       return NextResponse.json({ error: 'الطلب غير موجود' }, { status: 404 });
     }
 
-    // تجميع كميات الأصناف الفعلية
+    const actualOrderId = order.id;
+
+    // 2. Calculate unique product quantities for inventory adjustment
     const uniqueProductQuantities = new Map<string, number>();
     const items = order.order_items || [];
 
@@ -48,7 +68,7 @@ export async function PATCH(
 
     let willBeDeducted = isCurrentlyDeducted;
 
-    // الخصم عند اكتمال الطلب (مرة واحدة فقط وبكميات فريدة)
+    // Deduct stock on completed
     if (isNowCompleted && !isCurrentlyDeducted) {
       for (const [prodId, totalQty] of uniqueProductQuantities.entries()) {
         const { data: product } = await adminClient
@@ -69,7 +89,7 @@ export async function PATCH(
       willBeDeducted = true;
     }
 
-    // إعادة المخزون عند الإلغاء
+    // Restore stock on cancelled or returned
     if (isCancelledOrReturned && isCurrentlyDeducted) {
       for (const [prodId, totalQty] of uniqueProductQuantities.entries()) {
         const { data: product } = await adminClient
@@ -90,7 +110,7 @@ export async function PATCH(
       willBeDeducted = false;
     }
 
-    // تحديث الطلب
+    // 3. Update orders row
     const orderUpdatePayload: any = { 
       status, 
       stock_deducted: willBeDeducted,
@@ -100,16 +120,16 @@ export async function PATCH(
     let { data: updatedOrder, error: updateError } = await adminClient
       .from('orders')
       .update(orderUpdatePayload)
-      .eq('id', targetOrderId)
+      .eq('id', actualOrderId)
       .select('*, order_items(*, product:products(*)), customer:profiles(*)')
       .maybeSingle();
 
-    if (updateError && updateError.message.includes('stock_deducted')) {
+    if (updateError && updateError.message?.includes('stock_deducted')) {
       delete orderUpdatePayload.stock_deducted;
       const retry = await adminClient
         .from('orders')
         .update(orderUpdatePayload)
-        .eq('id', targetOrderId)
+        .eq('id', actualOrderId)
         .select('*, order_items(*, product:products(*)), customer:profiles(*)')
         .maybeSingle();
       updatedOrder = retry.data;
@@ -119,17 +139,18 @@ export async function PATCH(
       updatedOrder = { ...order, status, stock_deducted: willBeDeducted };
     }
 
-    // إعادة احتساب مديونية العميل بدقة: مجموع المتبقي من فواتير الآجل غير الملغية وغير المعلقة فقط - مجموع التحصيلات
-    if (order.customer_id) {
+    // 4. Automatically recalculate and update customer current_debt in profiles table
+    const targetCustomerId = order.customer_id;
+    if (targetCustomerId) {
       const [ordRes, payRes] = await Promise.all([
         adminClient
           .from('orders')
           .select('id, total, total_amount, paid_amount, remaining_amount, payment_method, status')
-          .eq('customer_id', order.customer_id),
+          .eq('customer_id', targetCustomerId),
         adminClient
           .from('customer_payments')
           .select('amount')
-          .eq('customer_id', order.customer_id)
+          .eq('customer_id', targetCustomerId)
       ]);
 
       const customerOrders = ordRes.data || [];
@@ -138,7 +159,7 @@ export async function PATCH(
 
       const totalCreditOrdersDebt = customerOrders
         .filter((o: any) => {
-          const ordStatus = o.id === targetOrderId ? status : o.status;
+          const ordStatus = o.id === actualOrderId ? status : o.status;
           return !['pending', 'cancelled', 'returned'].includes(ordStatus);
         })
         .reduce((sum: number, o: any) => {
@@ -158,15 +179,15 @@ export async function PATCH(
           previous_balance: netDebt,
           current_debt: netDebt,
           debt_balance: netDebt
-        }).eq('id', order.customer_id);
+        }).eq('id', targetCustomerId);
       } catch {
         await adminClient.from('profiles').update({
           previous_balance: netDebt
-        }).eq('id', order.customer_id);
+        }).eq('id', targetCustomerId);
       }
     }
 
-    // توثيق العملية في سجل العمليات
+    // 5. Audit Logging
     const statusArabicMap: Record<string, string> = {
       pending: 'قيد الانتظار',
       processing: 'تمت الموافقة والتجهيز',
@@ -180,18 +201,22 @@ export async function PATCH(
     };
 
     let customerRealName = order.customer_name || 'عميل المتجر';
+    let customerRole = 'customer';
     if (order.customer_id) {
-      const { data: prof } = await adminClient.from('profiles').select('full_name, store_name').eq('id', order.customer_id).maybeSingle();
-      if (prof) customerRealName = prof.full_name || prof.store_name || customerRealName;
+      const { data: prof } = await adminClient.from('profiles').select('full_name, store_name, role').eq('id', order.customer_id).maybeSingle();
+      if (prof) {
+        customerRealName = prof.full_name || prof.store_name || customerRealName;
+        customerRole = prof.role || customerRole;
+      }
     }
 
-    const orderNumberStr = order.invoice_no || order.order_number || targetOrderId;
+    const orderNumberStr = order.invoice_no || order.order_number || actualOrderId;
 
     await logAction({
-      actionType: 'تحديث حالة طلب',
+      actionType: status === 'cancelled' ? 'إلغاء طلب توريد' : 'تحديث حالة طلب',
       category: 'المبيعات والفواتير',
       details: `تم تغيير حالة طلب الفاتورة #${orderNumberStr} للعميل (${customerRealName}) إلى [${statusArabicMap[status] || status}]${willBeDeducted && !isCurrentlyDeducted ? ' وتم خصم المخزون بنجاح' : ''}`,
-      user: { id: 'admin', name: 'المدير العام', role: 'admin' }
+      user: { id: order.customer_id, name: customerRealName, role: customerRole }
     });
 
     return NextResponse.json({
