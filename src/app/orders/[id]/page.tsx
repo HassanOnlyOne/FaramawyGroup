@@ -27,6 +27,7 @@ import {
 } from 'lucide-react';
 import { OrderTimeline } from '@/components/orders/order-timeline';
 import { useNumberFormat } from '@/context/number-format-context';
+import { createClient } from '@/lib/supabase/client';
 
 const statusMap: Record<string, { label: string; color: string }> = {
   pending: { label: 'قيد المراجعة', color: 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300' },
@@ -61,31 +62,41 @@ export default function OrderDetailPage() {
 
   const fetchOrder = async () => {
     try {
-      const [res, creditRes] = await Promise.all([
-        fetch(`/api/orders/${id}?t=${Date.now()}`),
-        fetch(`/api/credit?t=${Date.now()}`)
-      ]);
-
+      const res = await fetch(`/api/orders/${id}?t=${Date.now()}`);
       const data = await res.json();
       const fetchedOrder = data.data || data.order || (data.id ? data : null);
 
-      if (creditRes.ok) {
-        const creditJson = await creditRes.json();
-        if (creditJson.success) {
-          const prof = creditJson.profile || fetchedOrder?.customer || {};
-          setProfile({
-            ...prof,
-            current_debt: creditJson.current_debt !== undefined ? Number(creditJson.current_debt) : Number(prof.current_debt || 0),
-            credit_limit: creditJson.credit_limit !== undefined ? Number(creditJson.credit_limit) : Number(prof.credit_limit || 0),
-            is_credit_enabled: creditJson.is_credit_enabled ?? prof.is_credit_enabled ?? prof.credit_enabled ?? true
-          });
-        }
-      } else if (fetchedOrder?.customer) {
-        setProfile(fetchedOrder.customer);
-      }
-
       if (res.ok && fetchedOrder) {
         setOrder(fetchedOrder);
+        
+        // Fetch fresh profile directly from profiles table
+        const customerId = fetchedOrder.customer_id || fetchedOrder.customer?.id;
+        let freshProfile = fetchedOrder.customer;
+
+        if (customerId) {
+          try {
+            const supabase = createClient();
+            const { data: p } = await supabase
+              .from('profiles')
+              .select('id, full_name, store_name, credit_limit, current_debt, is_credit_enabled, credit_enabled')
+              .eq('id', customerId)
+              .maybeSingle();
+            if (p) {
+              freshProfile = p;
+            }
+          } catch (e) {
+            console.error('Direct profile fetch error:', e);
+          }
+        }
+
+        if (freshProfile) {
+          setProfile({
+            ...freshProfile,
+            current_debt: Number(freshProfile.current_debt || 0),
+            credit_limit: Number(freshProfile.credit_limit || 0),
+            is_credit_enabled: freshProfile.is_credit_enabled ?? freshProfile.credit_enabled ?? true
+          });
+        }
       } else {
         toast({ title: 'خطأ', description: 'الطلب غير موجود', type: 'error' });
         router.push('/orders');
@@ -192,8 +203,8 @@ export default function OrderDetailPage() {
   
   // Max allowed credit for this order being edited
   const currentOrderRemaining = Number(order?.remaining_amount !== undefined ? order.remaining_amount : (order?.payment_method === 'credit' ? Math.max(0, Number(order?.total || 0) - Number(order?.paid_amount || 0)) : 0));
-  const maxAllowedCreditForOrder = baseAvailableCredit + currentOrderRemaining;
-  const isOverCreditLimit = isCredit && newRemainingCredit > maxAllowedCreditForOrder;
+  const maxCreditForThisOrder = baseAvailableCredit + currentOrderRemaining;
+  const isOverCreditLimit = isCredit && newRemainingCredit > maxCreditForThisOrder;
 
   const isCreditAllowedForCustomer = Boolean(
     profile?.is_credit_enabled !== false && 
@@ -212,10 +223,10 @@ export default function OrderDetailPage() {
       return;
     }
 
-    if (isCredit && newRemainingCredit > maxAllowedCreditForOrder) {
+    if (isCredit && newRemainingCredit > maxCreditForThisOrder) {
       toast({ 
         title: 'تجاوز الحد الائتماني المسموح', 
-        description: `المتبقي الآجل (${formatPriceShort(newRemainingCredit)}) يتجاوز رصيدك الائتماني المتاح (${formatPriceShort(maxAllowedCreditForOrder)})`, 
+        description: `المتبقي الآجل (${formatPriceShort(newRemainingCredit)}) يتجاوز الحد المتاح لك (${formatPriceShort(maxCreditForThisOrder)}). يرجى زيادة الدفعة الكاش.`, 
         type: 'error' 
       });
       return;
@@ -236,11 +247,11 @@ export default function OrderDetailPage() {
         total_amount: newTotal,
         paid_amount: newCashPaid,
         remaining_amount: newRemainingCredit,
-        payment_method: editablePaymentMethod,
+        payment_method: newRemainingCredit > 0 ? 'credit' : 'cash',
         status: 'pending'
       };
 
-      const res = await fetch(`/api/orders/${id}`, {
+      const res = await fetch(`/api/orders/${order.id || id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -249,10 +260,15 @@ export default function OrderDetailPage() {
       const resData = await res.json().catch(() => ({}));
 
       if (res.ok && resData.success !== false) {
-        toast({ title: 'تم حفظ وتحديث الطلب بنجاح', description: 'تم تحديث أصناف الفاتورة وطريقة السداد والإجمالي الجديد', type: 'success' });
         setShowEditModal(false);
+        toast({ title: 'تم حفظ وتحديث الطلب بنجاح', description: 'تم تحديث أصناف الفاتورة والمبالغ وطريقة السداد', type: 'success' });
         await fetchOrder();
         router.refresh();
+        if (typeof window !== 'undefined') {
+          setTimeout(() => {
+            window.location.reload();
+          }, 300);
+        }
       } else {
         toast({ title: 'خطأ في التعديل', description: resData.error || 'فشل حفظ التعديلات', type: 'error' });
       }
@@ -272,19 +288,19 @@ export default function OrderDetailPage() {
       const res = await fetch(`/api/orders/${id}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'cancelled' })
+        body: JSON.stringify({ status: 'cancelled' }),
       });
 
-      const data = await res.json().catch(() => ({}));
-
-      if (res.ok && data.success !== false) {
-        toast({ title: 'تم إلغاء الطلب', description: 'تم تحويل حالة الطلب إلى ملغي بنجاح', type: 'success' });
+      if (res.ok) {
+        toast({ title: 'تم إلغاء الطلب', description: 'تم تحديث حالة الطلب إلى ملغي بنجاح', type: 'success' });
         await fetchOrder();
+        router.refresh();
       } else {
+        const data = await res.json();
         toast({ title: 'خطأ', description: data.error || 'فشل إلغاء الطلب', type: 'error' });
       }
-    } catch (err: any) {
-      toast({ title: 'خطأ في الاتصال', description: err.message, type: 'error' });
+    } catch (error: any) {
+      toast({ title: 'خطأ', description: error.message || 'فشل إلغاء الطلب', type: 'error' });
     } finally {
       setIsCancelling(false);
     }
@@ -293,8 +309,8 @@ export default function OrderDetailPage() {
   if (isLoading) {
     return (
       <CustomerLayout>
-        <div className="flex justify-center items-center h-[60vh]">
-          <Loader2 className="w-10 h-10 text-emerald-600 dark:text-emerald-400 animate-spin" />
+        <div className="flex justify-center items-center min-h-[60vh]">
+          <Loader2 className="w-8 h-8 animate-spin text-emerald-600" />
         </div>
       </CustomerLayout>
     );
@@ -302,303 +318,319 @@ export default function OrderDetailPage() {
 
   if (!order) return null;
 
-  const isPending = order.status === 'pending';
-  const statusInfo = statusMap[order.status] || { label: order.status, color: 'bg-slate-100 text-slate-700' };
-  const invNo = order.invoice_no || order.order_number || String(order.id).slice(0, 8);
-  const invClean = String(invNo).replace(/\D/g, '') || invNo;
-  const totalVal = Number(order.total !== undefined ? order.total : (order.total_amount || 0));
-  const paidVal = Number(order.paid_amount || 0);
-  const remVal = Number(order.remaining_amount !== undefined ? order.remaining_amount : Math.max(0, totalVal - paidVal));
-
-  const filteredProductsToAdd = availableProducts.filter(p => {
-    if (!productSearch.trim()) return false;
-    const term = productSearch.toLowerCase();
-    return (
-      (p.name || '').toLowerCase().includes(term) ||
-      (p.sku_code || '').includes(term) ||
-      (p.sku || '').toLowerCase().includes(term)
-    );
-  });
+  const canEdit = order.status === 'pending';
+  const orderItems = order.order_items || [];
+  const statusInfo = statusMap[order.status] || { label: order.status, color: 'bg-slate-100 text-slate-800' };
 
   return (
     <CustomerLayout>
-      <div className="py-4 sm:py-8 max-w-5xl mx-auto px-3 sm:px-4 space-y-4 sm:space-y-6 pb-28" dir="rtl">
-        <Link href="/orders" className="inline-flex items-center gap-2 text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white transition-colors text-xs font-bold">
-          <ArrowRight className="w-4 h-4" />
-          <span>العودة لقائمة طلباتي</span>
-        </Link>
+      <div className="max-w-4xl mx-auto py-6 px-4 space-y-6" dir="rtl">
+        {/* Top Breadcrumb & Actions */}
+        <div className="flex items-center justify-between">
+          <Link href="/orders" className="inline-flex items-center gap-2 text-sm text-slate-500 hover:text-slate-900 dark:hover:text-white transition-colors">
+            <ArrowRight className="w-4 h-4" />
+            <span>العودة لكل الطلبات</span>
+          </Link>
+          <div className="flex items-center gap-2">
+            {canEdit && (
+              <>
+                <button
+                  onClick={handleOpenEditModal}
+                  className="px-3.5 py-1.5 bg-brand-50 hover:bg-brand-100 dark:bg-brand-950/60 dark:hover:bg-brand-900/80 text-brand-700 dark:text-brand-300 border border-brand-200 dark:border-brand-800 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                  <span>تعديل الطلب</span>
+                </button>
+                <button
+                  onClick={handleCancelOrder}
+                  disabled={isCancelling}
+                  className="px-3.5 py-1.5 bg-red-50 hover:bg-red-100 dark:bg-red-950/60 dark:hover:bg-red-900/80 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer disabled:opacity-50"
+                >
+                  {isCancelling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <XCircle className="w-3.5 h-3.5" />}
+                  <span>إلغاء الطلب</span>
+                </button>
+              </>
+            )}
+          </div>
+        </div>
 
-        {order.status === 'modified_by_owner' && (
-          <div className="bg-purple-50 dark:bg-purple-950/60 border border-purple-200 dark:border-purple-800 rounded-3xl p-4 sm:p-5 flex items-start gap-3 sm:gap-4 shadow-sm">
-            <AlertTriangle className="w-5 h-5 sm:w-6 sm:h-6 text-purple-600 dark:text-purple-400 shrink-0 mt-0.5" />
+        {/* Order Header Summary */}
+        <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 shadow-sm border border-slate-200 dark:border-slate-800">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-5">
             <div>
-              <h3 className="text-sm sm:text-base font-bold text-purple-900 dark:text-purple-200 mb-0.5">تم تعديل الطلب من قبل الإدارة</h3>
-              <p className="text-purple-700 dark:text-purple-300 text-xs">
-                لقد قمنا بتحديث بنود الفاتورة أو الأسعار. يرجى مراجعة التفاصيل أدناه.
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
+                  فاتورة توريد #{formatNumber(order.invoice_no || order.order_number)}
+                </h1>
+                <span className={`px-3 py-1 rounded-full text-xs font-bold border ${statusInfo.color}`}>
+                  {statusInfo.label}
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">
+                تاريخ التسجيل: {new Date(order.created_at).toLocaleDateString('ar-EG', { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
               </p>
             </div>
-          </div>
-        )}
-
-        {/* Customer Self-Edit / Cancel Action Bar for Pending Orders */}
-        {isPending ? (
-          <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 p-4 sm:p-5 rounded-3xl shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-2xl bg-amber-100 dark:bg-amber-900/60 flex items-center justify-center text-amber-700 dark:text-amber-300 shrink-0">
-                <Edit3 className="w-5 h-5" />
-              </div>
-              <div>
-                <h3 className="text-sm sm:text-base font-bold text-amber-950 dark:text-amber-200">الطلب قيد المراجعة ويمكنك تعديله</h3>
-                <p className="text-xs text-amber-700 dark:text-amber-300 mt-0.5">
-                  يمكنك تعديل الكميات، طريقة السداد، إضافة أو حذف أصناف قبل اعتماد الطلب
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 w-full sm:w-auto">
-              <button
-                onClick={handleOpenEditModal}
-                className="flex-1 sm:flex-none btn-primary flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs cursor-pointer shadow-sm"
-              >
-                <Edit3 className="w-4 h-4" />
-                <span>تعديل الطلب</span>
-              </button>
-              <button
-                onClick={handleCancelOrder}
-                disabled={isCancelling}
-                className="btn-secondary text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 border-red-200 dark:border-red-900/40 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs cursor-pointer"
-              >
-                <XCircle className="w-4 h-4" />
-                <span>{isCancelling ? 'جاري الإلغاء...' : 'إلغاء الطلب'}</span>
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 p-3 sm:p-4 rounded-2xl flex items-center gap-2.5 text-xs text-slate-600 dark:text-slate-300">
-            <Info className="w-4 h-4 text-slate-400 shrink-0" />
-            <span>لا يمكن تعديل الطلب أو إلغاؤه بعد اعتماده أو تجهيزه للتوصيل.</span>
-          </div>
-        )}
-
-        <div className="flex flex-col lg:flex-row gap-4 sm:gap-6">
-          <div className="w-full lg:w-2/3 space-y-4 sm:space-y-6">
-            {/* Header */}
-            <div className="bg-white dark:bg-slate-900 rounded-3xl p-4 sm:p-6 border border-slate-200 dark:border-slate-800 shadow-sm flex flex-wrap justify-between items-center gap-3">
-              <div>
-                <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white mb-1 flex items-center gap-2">
-                  <Package className="w-5 h-5 sm:w-6 sm:h-6 text-emerald-600 dark:text-emerald-400" />
-                  <span>فاتورة طلب #{formatNumber(invClean)}</span>
-                </h1>
-                <p className="text-slate-500 dark:text-slate-400 text-xs font-medium">
-                  بتاريخ {new Date(order.created_at).toLocaleDateString('ar-EG')} - {new Date(order.created_at).toLocaleTimeString('ar-EG')}
-                </p>
-              </div>
-              <span className={`px-3 py-1 rounded-full font-bold text-xs ${statusInfo.color}`}>
-                {statusInfo.label}
+            <div className="text-right sm:text-left">
+              <span className="text-xs text-slate-400 block mb-0.5">إجمالي قيمة الفاتورة</span>
+              <span className="text-2xl sm:text-3xl font-black text-brand-700 dark:text-emerald-400 font-mono">
+                {formatPriceShort(order.total || order.total_amount || 0)}
               </span>
             </div>
+          </div>
 
-            {/* Timeline */}
-            <div className="bg-white dark:bg-slate-900 rounded-3xl p-4 sm:p-6 border border-slate-200 dark:border-slate-800 shadow-sm">
-              <h2 className="text-sm sm:text-base font-black text-slate-900 dark:text-white mb-3">حالة ومسار التوريد</h2>
-              <OrderTimeline currentStatus={order.status} updatedAt={order.updated_at || order.created_at} />
+          {/* Timeline */}
+          <div className="pt-6">
+            <OrderTimeline currentStatus={order.status} />
+          </div>
+        </div>
+
+        {/* Order Details & Items Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {/* Items List (2 cols) */}
+          <div className="md:col-span-2 bg-white dark:bg-slate-900 rounded-3xl p-6 shadow-sm border border-slate-200 dark:border-slate-800 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <h2 className="font-black text-base text-slate-900 dark:text-white flex items-center gap-2">
+                <Package className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                أصناف وبضاعة الطلب ({formatNumber(orderItems.length)})
+              </h2>
+              {canEdit && (
+                <button
+                  onClick={handleOpenEditModal}
+                  className="text-xs text-brand-600 hover:text-brand-700 font-bold flex items-center gap-1"
+                >
+                  <Edit3 className="w-3.5 h-3.5" />
+                  <span>تعديل الكميات والأصناف</span>
+                </button>
+              )}
             </div>
 
-            {/* Order Items */}
-            <div className="bg-white dark:bg-slate-900 rounded-3xl p-4 sm:p-6 border border-slate-200 dark:border-slate-800 shadow-sm">
-              <div className="flex justify-between items-center mb-3">
-                <h2 className="text-sm sm:text-base font-black text-slate-900 dark:text-white">أصناف الفاتورة</h2>
-                {isPending && (
-                  <button
-                    onClick={handleOpenEditModal}
-                    className="text-xs font-bold text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1 cursor-pointer"
-                  >
-                    <Edit3 className="w-3.5 h-3.5" />
-                    <span>تعديل الأصناف وطريقة السداد</span>
-                  </button>
-                )}
-              </div>
-              <div className="divide-y divide-slate-100 dark:divide-slate-800">
-                {order.order_items?.map((item: any, idx: number) => {
-                  const prod = item.product || {};
-                  return (
-                    <div key={item.id || idx} className="py-3 sm:py-3.5 flex justify-between items-center text-xs">
-                      <div>
-                        <span className="font-bold text-slate-900 dark:text-white block text-xs sm:text-sm">{prod.name || item.product_name || 'صنف غذائي'}</span>
-                        <span className="text-slate-500 dark:text-slate-400 text-[11px] sm:text-xs">
-                          {formatNumber(item.quantity)} {prod.wholesale_unit || prod.unit || item.wholesale_unit || 'عبوة'} × {formatPriceShort(item.unit_price)}
-                        </span>
+            <div className="divide-y divide-slate-100 dark:divide-slate-800">
+              {orderItems.map((item: any, i: number) => {
+                const prod = item.product || {};
+                const unitPrice = Number(item.unit_price || item.price || 0);
+                const qty = Number(item.quantity || 1);
+                const totalLine = Number(item.total_price || (qty * unitPrice));
+                const unit = prod.wholesale_unit || prod.unit || item.wholesale_unit || 'عبوة';
+
+                return (
+                  <div key={item.id || i} className="py-3.5 flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-500 font-black text-xs shrink-0">
+                        {i + 1}
                       </div>
-                      <span className="font-bold text-slate-900 dark:text-white font-mono text-xs sm:text-sm whitespace-nowrap">
-                        {formatPriceShort(item.total_price || (item.quantity * item.unit_price))}
-                      </span>
+                      <div>
+                        <p className="font-bold text-sm text-slate-900 dark:text-slate-100 leading-tight">
+                          {prod.name || item.product_name || 'صنف غذائي'}
+                        </p>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          {formatNumber(qty)} {unit} × {formatPriceShort(unitPrice)}
+                        </p>
+                      </div>
                     </div>
-                  );
-                })}
+                    <div className="text-left font-mono font-black text-slate-900 dark:text-white text-base">
+                      {formatPriceShort(totalLine)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Financial Totals Breakdown */}
+            <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-2 text-xs">
+              <div className="flex justify-between text-slate-600 dark:text-slate-400">
+                <span>قيمة البضاعة (المجموع الفرعي):</span>
+                <span className="font-bold text-slate-800 dark:text-slate-200 font-mono text-sm">
+                  {formatPriceShort(order.subtotal || order.total || 0)}
+                </span>
               </div>
+
+              {Number(order.discount || 0) > 0 && (
+                <div className="flex justify-between text-emerald-600 font-bold">
+                  <span>خصم تجاري:</span>
+                  <span className="font-mono text-sm">-{formatPriceShort(order.discount)}</span>
+                </div>
+              )}
+
+              <div className="flex justify-between text-slate-600 dark:text-slate-400">
+                <span>مصاريف الشحن والنقل:</span>
+                <span className="font-bold text-slate-800 dark:text-slate-200 font-mono text-sm">
+                  {Number(order.delivery_fee || 0) > 0 ? formatPriceShort(order.delivery_fee) : 'يحدد لاحقاً'}
+                </span>
+              </div>
+
+              <div className="flex justify-between text-slate-900 dark:text-white font-black text-sm pt-2 border-t border-slate-200 dark:border-slate-700">
+                <span>إجمالي الفاتورة:</span>
+                <span className="text-base text-brand-700 dark:text-emerald-400 font-mono">
+                  {formatPriceShort(order.total || order.total_amount || 0)}
+                </span>
+              </div>
+
+              <div className="flex justify-between text-slate-700 dark:text-slate-300 font-bold pt-1">
+                <span>طريقة السداد:</span>
+                <span>{order.payment_method === 'credit' ? 'أجل (حساب تاجر معتمد)' : 'كاش نقداً عند الاستلام'}</span>
+              </div>
+
+              {order.payment_method === 'credit' && (
+                <>
+                  <div className="flex justify-between text-slate-600 dark:text-slate-400">
+                    <span>المبلغ المسدد كاش:</span>
+                    <span className="font-mono font-bold text-emerald-600">{formatPriceShort(order.paid_amount || 0)}</span>
+                  </div>
+                  <div className="flex justify-between text-orange-700 dark:text-orange-400 font-bold bg-orange-50 dark:bg-orange-950/40 p-2 rounded-xl border border-orange-200 dark:border-orange-900/50">
+                    <span>المتبقي الآجل على الحساب:</span>
+                    <span className="font-mono font-black">{formatPriceShort(order.remaining_amount !== undefined ? order.remaining_amount : Math.max(0, Number(order.total || 0) - Number(order.paid_amount || 0)))}</span>
+                  </div>
+                </>
+              )}
             </div>
           </div>
 
-          {/* Sidebar Summary */}
-          <div className="w-full lg:w-1/3 space-y-4 sm:space-y-6">
-            <div className="bg-white dark:bg-slate-900 rounded-3xl p-4 sm:p-6 border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
-              <h3 className="text-sm sm:text-base font-black text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-3">
-                الحساب والمدفوعات
+          {/* Delivery & Customer Info (1 col) */}
+          <div className="space-y-6">
+            <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 shadow-sm border border-slate-200 dark:border-slate-800 space-y-4">
+              <h3 className="font-black text-sm text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-3 flex items-center gap-2">
+                <MapPin className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                مقر التسليم وبيانات التواصل
               </h3>
-              
-              <div className="space-y-2.5 text-xs">
-                <div className="flex justify-between text-slate-600 dark:text-slate-400">
-                  <span>طريقة الدفع:</span>
-                  <span className="font-bold text-slate-900 dark:text-white">
-                    {order.payment_method === 'credit' ? 'أجل (آجل)' : 'كاش نقدي'}
+
+              <div className="space-y-3 text-xs">
+                <div>
+                  <span className="text-slate-400 block mb-0.5">اسم المنشأة / العميل:</span>
+                  <span className="font-bold text-slate-900 dark:text-slate-100">
+                    {order.customer?.store_name || order.store_name_ref || order.customer_name || order.customer?.full_name || 'عميل المتجر'}
                   </span>
                 </div>
-                <div className="flex justify-between text-slate-600 dark:text-slate-400">
-                  <span>إجمالي الفاتورة:</span>
-                  <span className="font-bold text-slate-900 dark:text-white font-mono">{formatPriceShort(totalVal)}</span>
+
+                <div>
+                  <span className="text-slate-400 block mb-0.5">رقم الهاتف:</span>
+                  <a href={`tel:${order.contact_phone}`} className="font-bold font-mono text-brand-600 hover:underline flex items-center gap-1">
+                    <Phone className="w-3.5 h-3.5" />
+                    <span>{order.contact_phone || '---'}</span>
+                  </a>
                 </div>
-                <div className="flex justify-between text-emerald-700 dark:text-emerald-400">
-                  <span>المسدد نقداً:</span>
-                  <span className="font-bold font-mono">{formatPriceShort(paidVal)}</span>
+
+                <div>
+                  <span className="text-slate-400 block mb-0.5">عنوان التوصيل:</span>
+                  <p className="font-semibold text-slate-800 dark:text-slate-200 leading-relaxed">
+                    {order.delivery_address || '---'}
+                  </p>
                 </div>
-                {remVal > 0 && (
-                  <div className="flex justify-between text-orange-700 dark:text-orange-400 font-bold pt-2 border-t border-slate-100 dark:border-slate-800">
-                    <span>المتبقي في حساب الأجل:</span>
-                    <span className="font-mono text-sm">{formatPriceShort(remVal)}</span>
+
+                {order.customer_notes && (
+                  <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700">
+                    <span className="text-slate-400 block mb-0.5 font-bold">ملاحظات الطلب:</span>
+                    <p className="text-slate-700 dark:text-slate-300 italic">{order.customer_notes}</p>
                   </div>
                 )}
-              </div>
-            </div>
-
-            {/* Delivery Details */}
-            <div className="bg-white dark:bg-slate-900 rounded-3xl p-4 sm:p-6 border border-slate-200 dark:border-slate-800 shadow-sm space-y-3">
-              <h3 className="text-sm sm:text-base font-black text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-3">
-                بيانات التسليم
-              </h3>
-              <div className="space-y-2 text-xs">
-                <div className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
-                  <Phone className="w-3.5 h-3.5 text-emerald-600" />
-                  <span dir="ltr" className="font-mono font-bold">{formatNumber(order.contact_phone || '')}</span>
-                </div>
-                <div className="flex items-start gap-2 text-slate-700 dark:text-slate-300">
-                  <MapPin className="w-3.5 h-3.5 text-orange-600 mt-0.5 shrink-0" />
-                  <span>{order.delivery_address || 'المخزن الرئيسي'}</span>
-                </div>
               </div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Enhanced Customer Edit Order Modal */}
+      {/* Edit Order Modal */}
       {showEditModal && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-3 sm:p-4 backdrop-blur-sm" dir="rtl">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden border border-slate-200 dark:border-slate-800">
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 dark:border-slate-800 animate-scale-in my-auto" dir="rtl">
             {/* Modal Header */}
-            <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-slate-50 dark:bg-slate-850">
+            <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-slate-50 dark:bg-slate-850 rounded-t-3xl">
               <div className="flex items-center gap-2">
-                <ShoppingCart className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
-                <h3 className="font-black text-base sm:text-lg text-slate-900 dark:text-white">
-                  تعديل أصناف وطريقة سداد الطلب #{formatNumber(invClean)}
-                </h3>
+                <div className="w-8 h-8 rounded-xl bg-brand-100 dark:bg-brand-950/60 text-brand-700 dark:text-brand-300 flex items-center justify-center font-bold">
+                  <Edit3 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm sm:text-base font-black text-slate-900 dark:text-white">تعديل طلب التوريد #{formatNumber(order.invoice_no || order.order_number)}</h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">تعديل كميات الأصناف، إضافة أصناف جديدة، أو تغيير طريقة السداد</p>
+                </div>
               </div>
               <button 
                 onClick={() => setShowEditModal(false)}
-                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-2xl font-bold p-1 cursor-pointer"
+                className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
               >
-                &times;
+                <XCircle className="w-5 h-5" />
               </button>
             </div>
 
             {/* Modal Body */}
-            <div className="p-4 sm:p-6 overflow-y-auto space-y-5 flex-1 scrollbar-thin">
-              
+            <div className="p-4 sm:p-5 overflow-y-auto space-y-4 flex-1">
               {/* Product Search & Add Section */}
-              <div className="relative">
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                  إضافة منتج جديد للطلب:
-                </label>
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200">إضافة صنف جديد للطلب:</label>
                 <div className="relative">
                   <input
                     type="text"
-                    placeholder="ابحث بالاسم أو كود الصنف لإضافته..."
                     value={productSearch}
-                    onChange={e => setProductSearch(e.target.value)}
-                    className="w-full pl-4 pr-10 py-2.5 border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 rounded-xl text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
+                    onChange={(e) => setProductSearch(e.target.value)}
+                    placeholder="ابحث باسم المنتج أو الصنف للإضافة..."
+                    className="w-full pl-3 pr-10 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-brand-500"
                   />
-                  <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-3.5" />
+                  <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-3" />
                 </div>
 
                 {productSearch.trim() && (
-                  <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl max-h-48 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-700">
-                    {filteredProductsToAdd.length === 0 ? (
-                      <div className="p-3 text-xs text-slate-400 text-center">لا توجد منتجات مطابقة للبحث</div>
-                    ) : (
-                      filteredProductsToAdd.map(prod => (
-                        <div
-                          key={prod.id}
-                          onClick={() => handleAddProduct(prod)}
-                          className="p-3 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 cursor-pointer transition-colors flex justify-between items-center"
-                        >
+                  <div className="max-h-40 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800 bg-white dark:bg-slate-850 rounded-xl border border-slate-200 dark:border-slate-700 shadow-md">
+                    {availableProducts
+                      .filter(p => p.name.toLowerCase().includes(productSearch.toLowerCase()))
+                      .slice(0, 10)
+                      .map(p => (
+                        <div key={p.id} className="p-2.5 flex items-center justify-between text-xs hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
                           <div>
-                            <span className="font-bold text-xs text-slate-900 dark:text-white block">{prod.name}</span>
-                            <span className="text-[11px] text-slate-400">الوحدة: {prod.wholesale_unit || prod.unit || 'عبوة'}</span>
+                            <span className="font-bold text-slate-800 dark:text-white block">{p.name}</span>
+                            <span className="text-[10px] text-slate-400">سعر {p.wholesale_unit || p.unit || 'الوحدة'}: {formatPriceShort(p.base_price || p.price)}</span>
                           </div>
-                          <div className="text-left flex items-center gap-2">
-                            <span className="font-mono font-bold text-xs text-emerald-600 dark:text-emerald-400">
-                              {formatPriceShort(prod.base_price || prod.price || 0)}
-                            </span>
-                            <span className="px-2 py-1 bg-emerald-600 text-white text-[10px] font-bold rounded-lg flex items-center gap-0.5">
-                              <Plus className="w-3 h-3" /> إضافة
-                            </span>
-                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleAddProduct(p)}
+                            className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg flex items-center gap-1 text-[11px] shadow-sm cursor-pointer"
+                          >
+                            <Plus className="w-3 h-3" />
+                            <span>إضافة</span>
+                          </button>
                         </div>
-                      ))
-                    )}
+                      ))}
                   </div>
                 )}
               </div>
 
-              {/* Items List */}
-              <div className="space-y-3">
-                <h4 className="text-xs font-black text-slate-800 dark:text-slate-200">الأصناف في الطلب ({editableItems.length})</h4>
-                <div className="space-y-2.5">
-                  {editableItems.map(item => (
+              {/* Editable Items List */}
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200">أصناف الفاتورة الحالية:</label>
+                <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                  {editableItems.map((item, idx) => (
                     <div 
-                      key={item.product_id || item.id}
-                      className="p-3 bg-slate-50 dark:bg-slate-850 rounded-2xl border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3 flex-wrap sm:flex-nowrap"
+                      key={item.product_id || item.id || idx}
+                      className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3 text-xs"
                     >
-                      <div className="flex-1 min-w-[150px]">
-                        <span className="font-bold text-xs sm:text-sm text-slate-900 dark:text-white block">{item.name}</span>
-                        <span className="text-[11px] text-slate-400">
-                          سعر {item.wholesale_unit}: {formatPriceShort(item.unit_price)}
-                        </span>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-bold text-slate-900 dark:text-slate-100 truncate">{item.name}</p>
+                        <p className="text-[10px] text-slate-400">
+                          {formatPriceShort(item.unit_price)} / {item.wholesale_unit || 'عبوة'}
+                        </p>
                       </div>
 
-                      {/* Quantity Controls */}
-                      <div className="flex items-center gap-2">
+                      {/* Quantity Control */}
+                      <div className="flex items-center gap-1.5 bg-white dark:bg-slate-800 p-1 rounded-xl border border-slate-200 dark:border-slate-700">
                         <button
                           type="button"
                           onClick={() => handleQuantityChange(item.product_id || item.id, -1)}
-                          disabled={item.quantity <= (item.min_order_quantity || 1)}
-                          className="w-7 h-7 rounded-lg bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 flex items-center justify-center text-slate-700 dark:text-slate-300 hover:bg-slate-100 disabled:opacity-40 cursor-pointer"
+                          className="w-6 h-6 rounded-lg bg-slate-100 dark:bg-slate-700 flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-200 cursor-pointer"
                         >
-                          <Minus className="w-3.5 h-3.5" />
+                          <Minus className="w-3 h-3" />
                         </button>
-                        <span className="w-8 text-center font-mono font-bold text-xs text-slate-900 dark:text-white">
+                        <span className="w-8 text-center font-bold font-mono text-slate-900 dark:text-white">
                           {formatNumber(item.quantity)}
                         </span>
                         <button
                           type="button"
                           onClick={() => handleQuantityChange(item.product_id || item.id, 1)}
-                          className="w-7 h-7 rounded-lg bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 flex items-center justify-center text-slate-700 dark:text-slate-300 hover:bg-slate-100 cursor-pointer"
+                          className="w-6 h-6 rounded-lg bg-slate-100 dark:bg-slate-700 flex items-center justify-center text-slate-700 dark:text-slate-200 hover:bg-slate-200 cursor-pointer"
                         >
-                          <Plus className="w-3.5 h-3.5" />
+                          <Plus className="w-3 h-3" />
                         </button>
                       </div>
 
-                      {/* Total Item Price */}
-                      <div className="text-left font-mono font-bold text-xs sm:text-sm text-slate-900 dark:text-white min-w-[70px]">
+                      {/* Line Total */}
+                      <div className="text-left font-mono font-black text-slate-900 dark:text-white w-20">
                         {formatPriceShort(item.quantity * item.unit_price)}
                       </div>
 
@@ -680,7 +712,7 @@ export default function OrderDetailPage() {
                       المبلغ المدفوع كاش الآن (عربون أو دفعة تحت الحساب):
                     </label>
                     <input 
-                      type="number"
+                      type="number" 
                       min="0"
                       max={newTotal}
                       step="50"
@@ -696,7 +728,7 @@ export default function OrderDetailPage() {
                     {isOverCreditLimit && (
                       <div className="p-2.5 bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-900 rounded-xl text-xs text-red-700 dark:text-red-300 font-bold flex items-center gap-2">
                         <ShieldAlert className="w-4 h-4 shrink-0 text-red-600" />
-                        <span>المتبقي الآجل ({formatPriceShort(newRemainingCredit)}) يتجاوز رصيدك الائتماني المتاح ({formatPriceShort(maxAllowedCreditForOrder)}). يرجى زيادة الدفعة الكاش.</span>
+                        <span>المتبقي الآجل ({formatPriceShort(newRemainingCredit)}) يتجاوز الحد المتاح لك ({formatPriceShort(maxCreditForThisOrder)}). يرجى زيادة الدفعة الكاش.</span>
                       </div>
                     )}
                   </div>
