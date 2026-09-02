@@ -109,7 +109,7 @@ export default function CustomersPage() {
           const totalPaidReceipts = customerPayments.reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
 
           const liveOrderDebt = customerOrders
-            .filter((o: any) => !['cancelled', 'returned'].includes(o.status))
+            .filter((o: any) => !['pending', 'cancelled', 'returned'].includes(o.status))
             .reduce((sum: number, o: any) => {
               const isCredit = o.payment_method === 'credit';
               const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));

@@ -93,7 +93,11 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    const activeOrders = matchedOrders.filter((o: any) => !['cancelled', 'returned'].includes(o.status));
+    // Non-pending, non-cancelled/returned orders (Active/Approved/Completed)
+    const approvedActiveOrders = matchedOrders.filter((o: any) => !['pending', 'cancelled', 'returned'].includes(o.status));
+    
+    // Pending orders (held for credit limit calculation only)
+    const pendingOrders = matchedOrders.filter((o: any) => o.status === 'pending');
 
     // Fetch payments
     let payments: any[] = [];
@@ -123,8 +127,8 @@ export async function GET(req: NextRequest) {
 
     const totalPaidSum = customerPayments.reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
 
-    // Calculate actual outstanding debt from credit orders ONLY minus customer payments
-    const grossDebt = activeOrders.reduce((sum: number, o: any) => {
+    // Calculate actual approved outstanding debt from credit orders ONLY minus customer payments
+    const grossApprovedDebt = approvedActiveOrders.reduce((sum: number, o: any) => {
       const isCredit = o.payment_method === 'credit';
       const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
       const ordPaid = Number(o.paid_amount || 0);
@@ -135,16 +139,27 @@ export async function GET(req: NextRequest) {
       return sum + rem;
     }, 0);
 
+    // Reserved credit from pending orders
+    const reservedCredit = pendingOrders.reduce((sum: number, o: any) => {
+      const isCredit = o.payment_method === 'credit';
+      const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
+      const ordPaid = Number(o.paid_amount || 0);
+      const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, ordTotal - ordPaid) : 0));
+      if (!isCredit && rem <= 0) return sum;
+      return sum + rem;
+    }, 0);
+
     const directProfileDebt = Number(profile.current_debt !== undefined && profile.current_debt !== null ? profile.current_debt : (profile.previous_balance || 0));
-    const currentDebt = directProfileDebt !== 0 ? directProfileDebt : (grossDebt > 0 ? Math.max(0, grossDebt - totalPaidSum) : 0);
+    const currentDebt = grossApprovedDebt > 0 
+      ? Math.max(0, grossApprovedDebt - totalPaidSum) 
+      : (customerPayments.length > 0 ? 0 : directProfileDebt);
 
     const creditLimit = Number(profile.credit_limit || 0);
-    const availableCredit = Math.max(0, creditLimit - currentDebt);
+    const availableCredit = Math.max(0, creditLimit - (currentDebt + reservedCredit));
 
-    // List of credit orders (exclusively credit or orders with remaining debt)
-    const creditWithdrawals = matchedOrders
+    // List of official approved credit orders for statement of account
+    const creditWithdrawals = approvedActiveOrders
       .filter((o: any) => {
-        if (['cancelled', 'returned'].includes(o.status)) return false;
         const isCredit = o.payment_method === 'credit';
         const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
         const ordPaid = Number(o.paid_amount || 0);
@@ -172,9 +187,14 @@ export async function GET(req: NextRequest) {
 
     return new NextResponse(JSON.stringify({
       success: true,
-      profile,
+      profile: {
+        ...profile,
+        current_debt: currentDebt,
+        previous_balance: currentDebt
+      },
       is_credit_enabled: isCreditActive,
       current_debt: currentDebt,
+      reserved_credit: reservedCredit,
       credit_limit: creditLimit,
       available_credit: availableCredit,
       credit_orders: creditWithdrawals,

@@ -1,79 +1,44 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { logAction } from '@/lib/audit';
-import type { OrderStatus } from '@/lib/types';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 export async function PATCH(
   req: NextRequest,
-  context: { params: Promise<{ id: string }> }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = await context.params;
-    const supabase = await createClient();
     const adminClient = createAdminClient();
-
+    const { id: targetOrderId } = await params;
     const body = await req.json();
-    const status: OrderStatus = body.status;
+    const { status } = body;
 
     if (!status) {
-      return NextResponse.json({ success: false, error: 'الحالة مطلوب تحديدها' }, { status: 400 });
+      return NextResponse.json({ error: 'حالة الطلب مطلوبة' }, { status: 400 });
     }
 
-    // 1. جلب الطلب منفرداً أولاً
-    let query = adminClient.from('orders').select('*');
-    if (id.startsWith('INV-')) {
-      query = query.eq('invoice_no', id);
-    } else if (id.startsWith('ORD-')) {
-      query = query.eq('order_number', id);
-    } else {
-      query = query.or(`id.eq.${id},order_number.eq.${id},invoice_no.eq.${id}`);
+    // جلب الطلب وعناصره
+    const { data: order, error: orderFetchError } = await adminClient
+      .from('orders')
+      .select('*, order_items(*, product:products(*))')
+      .eq('id', targetOrderId)
+      .maybeSingle();
+
+    if (orderFetchError || !order) {
+      return NextResponse.json({ error: 'الطلب غير موجود' }, { status: 404 });
     }
 
-    const { data: orderList } = await query;
-    let order = orderList && orderList[0];
-
-    if (!order) {
-      let fbQuery = supabase.from('orders').select('*');
-      if (id.startsWith('INV-')) {
-        fbQuery = fbQuery.eq('invoice_no', id);
-      } else if (id.startsWith('ORD-')) {
-        fbQuery = fbQuery.eq('order_number', id);
-      } else {
-        fbQuery = fbQuery.or(`id.eq.${id},order_number.eq.${id},invoice_no.eq.${id}`);
-      }
-      const fbRes = await fbQuery;
-      order = fbRes.data && fbRes.data[0];
-    }
-
-    if (!order) {
-      return NextResponse.json({ success: false, error: 'الطلب غير موجود' }, { status: 404 });
-    }
-
-    const targetOrderId = order.id;
-
-    // 2. جلب بنود الطلب من جدول order_items مباشرة لضمان عدم التكرار
-    const { data: rawItems } = await adminClient
-      .from('order_items')
-      .select('id, product_id, quantity')
-      .eq('order_id', targetOrderId);
-
-    // تجميع كميات الأصناف في Map فريد تماماً
+    // تجميع كميات الأصناف الفعلية
     const uniqueProductQuantities = new Map<string, number>();
-    if (rawItems && rawItems.length > 0) {
-      const seenItemIds = new Set<string>();
-      for (const item of rawItems) {
-        if (!seenItemIds.has(item.id)) {
-          seenItemIds.add(item.id);
-          const pId = item.product_id;
-          const qty = Number(item.quantity) || 0;
-          if (pId && qty > 0) {
-            uniqueProductQuantities.set(pId, (uniqueProductQuantities.get(pId) || 0) + qty);
-          }
-        }
+    const items = order.order_items || [];
+
+    for (const item of items) {
+      const prodId = item.product_id || item.product?.id;
+      const qty = Number(item.quantity) || 0;
+      if (prodId && qty > 0) {
+        uniqueProductQuantities.set(prodId, (uniqueProductQuantities.get(prodId) || 0) + qty);
       }
     }
 
@@ -154,7 +119,7 @@ export async function PATCH(
       updatedOrder = { ...order, status, stock_deducted: willBeDeducted };
     }
 
-    // إعادة احتساب مديونية العميل بدقة: مجموع المتبقي من فواتير الآجل غير الملغية فقط - مجموع التحصيلات
+    // إعادة احتساب مديونية العميل بدقة: مجموع المتبقي من فواتير الآجل غير الملغية وغير المعلقة فقط - مجموع التحصيلات
     if (order.customer_id) {
       const [ordRes, payRes] = await Promise.all([
         adminClient
@@ -174,7 +139,7 @@ export async function PATCH(
       const totalCreditOrdersDebt = customerOrders
         .filter((o: any) => {
           const ordStatus = o.id === targetOrderId ? status : o.status;
-          return !['cancelled', 'returned'].includes(ordStatus);
+          return !['pending', 'cancelled', 'returned'].includes(ordStatus);
         })
         .reduce((sum: number, o: any) => {
           const isCredit = o.payment_method === 'credit';
@@ -220,25 +185,24 @@ export async function PATCH(
       if (prof) customerRealName = prof.full_name || prof.store_name || customerRealName;
     }
 
-    const rawInvoiceNo = order.invoice_no || order.order_number || targetOrderId;
-    const cleanInvoiceNo = String(rawInvoiceNo).replace(/^#+/, '');
-    const formattedInvoiceNo = cleanInvoiceNo.startsWith('INV-') 
-      ? `#${cleanInvoiceNo}` 
-      : `#INV-${cleanInvoiceNo.padStart(6, '0')}`;
+    const orderNumberStr = order.invoice_no || order.order_number || targetOrderId;
 
     await logAction({
       actionType: 'تحديث حالة طلب',
       category: 'المبيعات والفواتير',
-      details: `تم تغيير حالة الفاتورة/الطلب (${formattedInvoiceNo}) للعميل (${customerRealName}) إلى حالة (${statusArabicMap[status] || status})`
+      details: `تم تغيير حالة طلب الفاتورة #${orderNumberStr} للعميل (${customerRealName}) إلى [${statusArabicMap[status] || status}]${willBeDeducted && !isCurrentlyDeducted ? ' وتم خصم المخزون بنجاح' : ''}`,
+      user: { id: 'admin', name: 'المدير العام', role: 'admin' }
     });
 
-    return NextResponse.json({ 
-      success: true, 
-      data: updatedOrder, 
-      message: 'تم تحديث حالة الطلب والمخزون بنجاح' 
-    }, { status: 200 });
-  } catch (err: any) {
-    console.error('Admin Status PATCH error:', err);
-    return NextResponse.json({ success: false, error: err.message }, { status: 500 });
+    return NextResponse.json({
+      success: true,
+      data: updatedOrder,
+      stockDeducted: willBeDeducted,
+      message: `تم تحديث حالة الطلب إلى ${statusArabicMap[status] || status} بنجاح`
+    });
+
+  } catch (error: any) {
+    console.error('Update status error:', error);
+    return NextResponse.json({ error: error.message || 'فشل تحديث حالة الطلب' }, { status: 500 });
   }
 }

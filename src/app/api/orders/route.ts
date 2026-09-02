@@ -383,21 +383,7 @@ export async function POST(req: NextRequest) {
       await adminClient.from('order_items').insert(formattedOrderItems);
     }
 
-    // Update customer current_debt in profiles ONLY if method is credit and remaining > 0
-    if (customerId && method === 'credit' && finalRemaining > 0) {
-      const newDebt = prevBalance + finalRemaining;
-      try {
-        await adminClient.from('profiles').update({
-          previous_balance: newDebt,
-          current_debt: newDebt,
-          debt_balance: newDebt
-        }).eq('id', customerId);
-      } catch {
-        await adminClient.from('profiles').update({
-          previous_balance: newDebt
-        }).eq('id', customerId);
-      }
-    }
+    // Pending orders do not add to current_debt (debt is only accrued when order is approved/completed)
 
     // Log in audit log
     await logAction({

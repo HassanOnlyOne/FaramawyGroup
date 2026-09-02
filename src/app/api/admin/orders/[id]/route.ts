@@ -255,7 +255,10 @@ async function handleAdminOrderUpdate(req: NextRequest, id: string) {
       const totalPaymentsSum = customerPayments.reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
 
       const totalCreditOrdersDebt = customerOrders
-        .filter((o: any) => !['cancelled', 'returned'].includes(o.status))
+        .filter((o: any) => {
+          const ordStatus = o.id === targetOrderId ? (status || existingOrder.status) : o.status;
+          return !['pending', 'cancelled', 'returned'].includes(ordStatus);
+        })
         .reduce((sum: number, o: any) => {
           if (o.id === targetOrderId) {
             return sum + finalRemaining;

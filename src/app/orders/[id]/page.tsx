@@ -245,6 +245,7 @@ export default function OrderDetailPage() {
         toast({ title: 'تم حفظ وتحديث الطلب بنجاح', description: 'تم تحديث أصناف الفاتورة وطريقة السداد والإجمالي الجديد', type: 'success' });
         setShowEditModal(false);
         await fetchOrder();
+        router.refresh();
       } else {
         toast({ title: 'خطأ في التعديل', description: resData.error || 'فشل حفظ التعديلات', type: 'error' });
       }
