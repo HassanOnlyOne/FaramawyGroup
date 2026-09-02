@@ -1,6 +1,7 @@
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { NextRequest, NextResponse } from 'next/server';
+import { logAction } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -66,37 +67,69 @@ export async function POST(req: NextRequest) {
     const supabase = await createClient();
 
     const body = await req.json();
-    const { full_name, phone, route_name } = body;
+    const { full_name, phone, route_name, territory } = body;
+
+    const trimmedName = (full_name || '').trim();
+    const cleanPhone = (phone || '').trim();
+    const territoryName = (territory || route_name || 'خط مبيعات عام').trim();
+
+    if (!trimmedName) {
+      return NextResponse.json({ error: 'يرجى إدخال اسم المندوب' }, { status: 400 });
+    }
+
+    if (cleanPhone) {
+      // 1. Check for duplicate phone in profiles table
+      const { data: existingPhone } = await adminClient
+        .from('profiles')
+        .select('id, full_name, phone')
+        .eq('phone', cleanPhone)
+        .maybeSingle();
+
+      if (existingPhone) {
+        return NextResponse.json({
+          error: 'رقم الهاتف مسجل بالفعل لمستخدم آخر'
+        }, { status: 400 });
+      }
+    }
 
     const nextCode = await getNextDelegateCode(adminClient);
-    const payload = {
+    const payload: any = {
       id: crypto.randomUUID(),
-      full_name: full_name?.trim() || 'مندوب مبيعات',
-      store_name: route_name?.trim() || 'خط مبيعات عام',
-      phone: phone?.trim() || null,
+      full_name: trimmedName,
+      store_name: territoryName,
+      phone: cleanPhone || null,
       email: `rep${nextCode}@elfarmawy.com`,
       customer_code: nextCode,
       role: 'delegate',
       credit_limit: 0,
       previous_balance: 0,
+      current_debt: 0,
       credit_enabled: false,
+      is_credit_enabled: false,
       created_at: new Date().toISOString()
     };
 
-    let { data, error } = await adminClient.from('profiles').insert(payload).select().maybeSingle();
+    let { data, error } = await adminClient.from('profiles').insert([payload]).select().maybeSingle();
     if (error || !data) {
-      const fb = await supabase.from('profiles').insert(payload).select().maybeSingle();
+      const fb = await supabase.from('profiles').insert([payload]).select().maybeSingle();
       data = fb.data;
       error = fb.error;
     }
 
     if (error && !data) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
+      return NextResponse.json({ error: error.message || 'فشل تسجيل المندوب' }, { status: 400 });
     }
 
-    return NextResponse.json({ data, message: 'تم تسجيل المندوب بنجاح' }, { status: 201 });
+    // Log action to audit_logs
+    await logAction({
+      actionType: 'إضافة مندوب مبيعات',
+      category: 'الأمان والصلاحيات',
+      details: `تم تسجيل مندوب جديد: (${trimmedName}) - كود: #${nextCode} - خط السير: (${territoryName}) - هاتف: ${cleanPhone || 'غير محدد'}`
+    });
+
+    return NextResponse.json({ success: true, data, message: 'تم تسجيل المندوب بنجاح' }, { status: 201 });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: err.message || 'حدث خطأ أثناء حفظ المندوب' }, { status: 500 });
   }
 }
 
@@ -106,14 +139,33 @@ export async function PUT(req: NextRequest) {
     const supabase = await createClient();
 
     const body = await req.json();
-    const { id, full_name, phone, route_name, customer_code } = body;
+    const { id, full_name, phone, route_name, territory, customer_code } = body;
 
     if (!id) return NextResponse.json({ error: 'معرف المندوب مطلوب' }, { status: 400 });
 
-    const updates: any = {};
+    const cleanPhone = phone ? String(phone).trim() : null;
+
+    if (cleanPhone) {
+      const { data: existingPhone } = await adminClient
+        .from('profiles')
+        .select('id, full_name')
+        .eq('phone', cleanPhone)
+        .neq('id', id)
+        .maybeSingle();
+
+      if (existingPhone) {
+        return NextResponse.json({
+          error: 'رقم الهاتف مسجل بالفعل لمستخدم آخر'
+        }, { status: 400 });
+      }
+    }
+
+    const updates: any = {
+      role: 'delegate'
+    };
     if (full_name !== undefined) updates.full_name = full_name.trim();
-    if (phone !== undefined) updates.phone = phone ? phone.trim() : null;
-    if (route_name !== undefined) updates.store_name = route_name.trim();
+    if (phone !== undefined) updates.phone = cleanPhone;
+    if (territory !== undefined || route_name !== undefined) updates.store_name = (territory || route_name).trim();
     if (customer_code !== undefined) updates.customer_code = String(customer_code).replace(/\D/g, '');
 
     let { data, error } = await adminClient.from('profiles').update(updates).eq('id', id).select().maybeSingle();
@@ -125,7 +177,7 @@ export async function PUT(req: NextRequest) {
 
     if (error) throw error;
 
-    return NextResponse.json({ data, message: 'تم تحديث بيانات المندوب بنجاح' }, { status: 200 });
+    return NextResponse.json({ success: true, data, message: 'تم تحديث بيانات المندوب بنجاح' }, { status: 200 });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
