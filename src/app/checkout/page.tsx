@@ -24,7 +24,7 @@ export default function CheckoutPage() {
   const [deliveryAddress, setDeliveryAddress] = useState('');
   const [customerNotes, setCustomerNotes] = useState('');
   const [paidAmount, setPaidAmount] = useState('');
-  const [previousDebt, setPreviousDebt] = useState(0);
+  const [currentDebt, setCurrentDebt] = useState<number>(0);
 
   useEffect(() => {
     async function loadData() {
@@ -40,10 +40,11 @@ export default function CheckoutPage() {
           currentProf = prof.user || prof.data || prof;
         }
 
+        let fetchedDebt = 0;
         if (creditRes.ok) {
           const creditJson = await creditRes.json();
           if (creditJson.success) {
-            setPreviousDebt(Number(creditJson.current_debt || 0));
+            fetchedDebt = Number(creditJson.current_debt || 0);
             if (!currentProf && creditJson.profile) {
               currentProf = creditJson.profile;
             }
@@ -51,6 +52,11 @@ export default function CheckoutPage() {
         }
 
         if (currentProf) {
+          const debtFromProfile = currentProf.current_debt !== undefined && currentProf.current_debt !== null 
+            ? Number(currentProf.current_debt) 
+            : fetchedDebt;
+            
+          setCurrentDebt(debtFromProfile);
           setProfile(currentProf);
           setCustomerName(currentProf.store_name || currentProf.full_name || currentProf.name || '');
           setContactPhone(currentProf.phone || '');
@@ -64,6 +70,8 @@ export default function CheckoutPage() {
           if (!creditEnabled) {
             setPaymentMethod('cash');
           }
+        } else {
+          setCurrentDebt(fetchedDebt);
         }
       } catch (err) {
         console.error(err);
@@ -82,13 +90,12 @@ export default function CheckoutPage() {
   );
 
   const creditLimit = Number(profile?.credit_limit || 0);
-  const currentDebt = previousDebt;
   const availableCredit = Math.max(0, creditLimit - currentDebt);
 
   const cartSubtotal = items.reduce((sum, it) => sum + Number(it.total_price || (it.quantity * (it.unit_price || it.appliedPrice || it.product?.base_price || 0))), 0);
   const numPaid = Math.min(total, Math.max(0, Number(paidAmount || 0)));
   const remainingCredit = (paymentMethod === 'credit' && isCreditAllowed) ? Math.max(0, total - numPaid) : 0;
-  const cumulativeTotal = total + previousDebt;
+  const cumulativeTotal = total + currentDebt;
 
   const handleCheckout = async () => {
     setError('');
@@ -106,7 +113,7 @@ export default function CheckoutPage() {
       }
 
       if (remainingCredit > availableCredit) {
-        setError(`عفواً، المبلغ المتبقي للآجل (${remainingCredit.toLocaleString('ar-EG')} ج.م) يتجاوز الرصيد الائتماني المتاح لك (${availableCredit.toLocaleString('ar-EG')} ج.م). الحد الائتماني المعتمد: ${creditLimit.toLocaleString('ar-EG')} ج.م والمديونية السابقة: ${currentDebt.toLocaleString('ar-EG')} ج.م.`);
+        setError(`عفواً، المبلغ المتبقي للآجل (${remainingCredit.toLocaleString('ar-EG')} ج.م) يتجاوز الرصيد الائتماني المتاح لك (${availableCredit.toLocaleString('ar-EG')} ج.م). الحد الائتماني المعتمد: ${creditLimit.toLocaleString('ar-EG')} ج.م والمديونية الحالية: ${currentDebt.toLocaleString('ar-EG')} ج.م.`);
         return;
       }
     }
@@ -144,7 +151,8 @@ export default function CheckoutPage() {
       const orderData = {
         customer_id: profile?.id,
         customer_code: profile?.customer_code,
-        previous_balance: previousDebt,
+        previous_balance: currentDebt,
+        current_debt: currentDebt,
         customer_name: customerName.trim(),
         store_name: profile?.store_name || customerName.trim(),
         contact_phone: cleanPhone,
@@ -252,10 +260,10 @@ export default function CheckoutPage() {
                     يُحدد لاحقاً (حسب المسافة والكمية)
                   </span>
                 </div>
-                {previousDebt > 0 && (
+                {currentDebt > 0 && (
                   <div className="flex justify-between text-red-700 dark:text-red-400 font-bold bg-red-50/60 dark:bg-red-950/40 p-2.5 rounded-xl border border-red-200 dark:border-red-900/50">
-                    <span>+ مديونية سابقة مسجلة على حسابك:</span>
-                    <span className="font-black font-mono">{formatPriceShort(previousDebt)}</span>
+                    <span>+ مديونية حالية مسجلة على حسابك:</span>
+                    <span className="font-black font-mono">{formatPriceShort(currentDebt)}</span>
                   </div>
                 )}
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800/60 p-2 rounded-xl border border-slate-200 dark:border-slate-700">
