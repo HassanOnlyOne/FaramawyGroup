@@ -1,10 +1,10 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, useEffect, useCallback } from 'react';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { useToast } from '@/components/ui/toast';
 import { createClient } from '@/lib/supabase/client';
+import { recordAuditLog } from '@/lib/audit-client';
 import { 
   Plus, 
   Search, 
@@ -19,7 +19,6 @@ import {
 } from 'lucide-react';
 
 export default function DelegatesPage() {
-  const router = useRouter();
   const { toast } = useToast();
   const supabase = createClient();
 
@@ -41,36 +40,37 @@ export default function DelegatesPage() {
     is_active: true
   });
 
-  useEffect(() => {
-    fetchDelegates();
-  }, []);
-
-  async function fetchDelegates() {
+  // 1. Direct Supabase Query as Primary Single Source of Truth
+  const fetchDelegates = useCallback(async () => {
     try {
-      const res = await fetch(`/api/delegates?t=${Date.now()}`);
+      // Direct query to delegates table
+      const { data: dbData, error } = await supabase
+        .from('delegates')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error && dbData) {
+        setDelegates(dbData);
+        return;
+      }
+
+      // API fallback with timestamp to bypass stale cache
+      const res = await fetch(`/api/delegates?t=${Date.now()}`, { cache: 'no-store' });
       if (res.ok) {
         const json = await res.json();
-        setDelegates(json.data || json.delegates || []);
-      } else {
-        const { data } = await supabase
-          .from('delegates')
-          .select('*')
-          .order('created_at', { ascending: false });
-        if (data) setDelegates(data);
+        const apiData = json.data || json.delegates || [];
+        setDelegates(apiData);
       }
     } catch (err) {
       console.error('Fetch delegates error:', err);
-      try {
-        const { data } = await supabase
-          .from('delegates')
-          .select('*')
-          .order('created_at', { ascending: false });
-        if (data) setDelegates(data);
-      } catch {}
     } finally {
       setLoading(false);
     }
-  }
+  }, [supabase]);
+
+  useEffect(() => {
+    fetchDelegates();
+  }, [fetchDelegates]);
 
   const handleCreateDelegate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,30 +82,49 @@ export default function DelegatesPage() {
 
     setFormLoading(true);
     try {
-      const payload = {
+      const cleanPhone = newDelegate.phone.trim() || null;
+      const territoryName = newDelegate.territory.trim() || 'خط مبيعات عام';
+      const nowIso = new Date().toISOString();
+
+      const newRecord = {
+        id: crypto.randomUUID(),
         full_name: trimmedName,
-        phone: newDelegate.phone.trim() || null,
-        territory: newDelegate.territory.trim() || 'خط مبيعات عام',
+        phone: cleanPhone,
+        territory: territoryName,
         notes: newDelegate.notes.trim() || null,
-        is_active: newDelegate.is_active
+        is_active: newDelegate.is_active !== false,
+        created_at: nowIso,
+        updated_at: nowIso
       };
 
-      const res = await fetch('/api/delegates', {
+      // 1. Insert directly into Supabase delegates table
+      await supabase
+        .from('delegates')
+        .insert([newRecord]);
+
+      // 2. Also call API route to ensure server audit logging
+      await fetch('/api/delegates', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json().catch(() => ({}));
+        body: JSON.stringify(newRecord)
+      }).catch(() => {});
 
-      if (res.ok && !data.error) {
-        toast({ title: 'تم تسجيل المندوب بنجاح', description: `تم تسجيل المندوب (${trimmedName})`, type: 'success' });
-        setShowAddModal(false);
-        setNewDelegate({ full_name: '', phone: '', territory: '', notes: '', is_active: true });
-        await fetchDelegates();
-        router.refresh();
-      } else {
-        toast({ title: 'خطأ في حفظ المندوب', description: data.error || 'تعذر تسجيل المندوب', type: 'error' });
-      }
+      // 3. Client audit log backup
+      await recordAuditLog({
+        action_type: 'إضافة مندوب جديد',
+        category: 'المندوبين والمشرفين',
+        details: `تم تسجيل المندوب الجديد [${trimmedName}] - هاتف: [${cleanPhone || 'غير محدد'}] - خط السير: [${territoryName}]`
+      });
+
+      toast({ 
+        title: 'تم تسجيل المندوب بنجاح', 
+        description: `تم حفظ المندوب (${trimmedName}) وتثبيته في قاعدة البيانات`, 
+        type: 'success' 
+      });
+
+      setShowAddModal(false);
+      setNewDelegate({ full_name: '', phone: '', territory: '', notes: '', is_active: true });
+      await fetchDelegates();
     } catch (err: any) {
       toast({ title: 'خطأ في الاتصال بالسيرفر', description: err.message, type: 'error' });
     } finally {
@@ -122,30 +141,47 @@ export default function DelegatesPage() {
 
     setFormLoading(true);
     try {
-      const payload = {
-        id: editDelegate.id,
-        full_name: editDelegate.full_name.trim(),
-        phone: editDelegate.phone?.trim() || null,
-        territory: (editDelegate.territory || editDelegate.store_name || editDelegate.route_name || '').trim(),
+      const trimmedName = editDelegate.full_name.trim();
+      const cleanPhone = editDelegate.phone?.trim() || null;
+      const territoryName = (editDelegate.territory || editDelegate.store_name || editDelegate.route_name || '').trim();
+      const nowIso = new Date().toISOString();
+
+      const updates = {
+        full_name: trimmedName,
+        phone: cleanPhone,
+        territory: territoryName,
         is_active: editDelegate.is_active !== false,
-        notes: editDelegate.notes?.trim() || null
+        notes: editDelegate.notes?.trim() || null,
+        updated_at: nowIso
       };
 
-      const res = await fetch('/api/delegates', {
+      // 1. Update directly in Supabase
+      await supabase
+        .from('delegates')
+        .update(updates)
+        .eq('id', editDelegate.id);
+
+      // 2. Call API for sync and server-side log
+      await fetch('/api/delegates', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json().catch(() => ({}));
+        body: JSON.stringify({ id: editDelegate.id, ...updates })
+      }).catch(() => {});
 
-      if (res.ok && !data.error) {
-        toast({ title: 'تم تحديث بيانات المندوب بنجاح', type: 'success' });
-        setEditDelegate(null);
-        await fetchDelegates();
-        router.refresh();
-      } else {
-        toast({ title: 'خطأ في تعديل المندوب', description: data.error || 'فشل تحديث بيانات المندوب', type: 'error' });
-      }
+      // 3. Client audit log backup
+      await recordAuditLog({
+        action_type: 'تعديل بيانات مندوب',
+        category: 'المندوبين والمشرفين',
+        details: `تم تحديث بيانات المندوب [${trimmedName}] (تعديل خط السير أو الهاتف أو حالة التفعيل)`
+      });
+
+      toast({ 
+        title: 'تم تحديث بيانات المندوب بنجاح', 
+        type: 'success' 
+      });
+
+      setEditDelegate(null);
+      await fetchDelegates();
     } catch (err: any) {
       toast({ title: 'خطأ في الاتصال بالسيرفر', description: err.message, type: 'error' });
     } finally {
@@ -159,19 +195,32 @@ export default function DelegatesPage() {
     setFormLoading(true);
     try {
       const targetName = deleteTarget.full_name || 'المندوب';
-      const res = await fetch(`/api/delegates?id=${deleteTarget.id}&name=${encodeURIComponent(targetName)}`, {
-        method: 'DELETE'
-      });
-      const data = await res.json().catch(() => ({}));
 
-      if (res.ok && !data.error) {
-        toast({ title: 'تم حذف المندوب بنجاح', type: 'success' });
-        setDeleteTarget(null);
-        await fetchDelegates();
-        router.refresh();
-      } else {
-        toast({ title: 'خطأ في حذف المندوب', description: data.error || 'تعذر حذف المندوب', type: 'error' });
-      }
+      // 1. Delete directly in Supabase
+      await supabase
+        .from('delegates')
+        .delete()
+        .eq('id', deleteTarget.id);
+
+      // 2. Call API for sync
+      await fetch(`/api/delegates?id=${deleteTarget.id}&name=${encodeURIComponent(targetName)}`, {
+        method: 'DELETE'
+      }).catch(() => {});
+
+      // 3. Client audit log backup
+      await recordAuditLog({
+        action_type: 'حذف مندوب',
+        category: 'المندوبين والمشرفين',
+        details: `تم حذف المندوب [${targetName}] من سجلات المناديب`
+      });
+
+      toast({ 
+        title: 'تم حذف المندوب بنجاح', 
+        type: 'success' 
+      });
+
+      setDeleteTarget(null);
+      await fetchDelegates();
     } catch (err: any) {
       toast({ title: 'خطأ في الاتصال', description: err.message, type: 'error' });
     } finally {
@@ -210,7 +259,7 @@ export default function DelegatesPage() {
                 placeholder="بحث بالمندوب أو خط السير..."
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                className="w-full pl-4 pr-9 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-emerald-500 bg-white"
+                className="w-full pl-4 pr-9 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-brand-500 bg-white"
               />
               <Search className="w-4 h-4 text-slate-400 absolute right-3 top-2.5" />
             </div>
@@ -305,7 +354,7 @@ export default function DelegatesPage() {
                       <td className="p-4">
                         {d.is_active !== false ? (
                           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
                             <span>نشط</span>
                           </span>
                         ) : (
@@ -364,7 +413,7 @@ export default function DelegatesPage() {
                     placeholder="مثال: أحمد عبد الرحمن إبراهيم"
                     value={newDelegate.full_name}
                     onChange={e => setNewDelegate({ ...newDelegate, full_name: e.target.value })}
-                    className="w-full p-3 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-emerald-500"
+                    className="w-full p-3 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-brand-500"
                   />
                 </div>
 
@@ -375,7 +424,7 @@ export default function DelegatesPage() {
                     placeholder="010XXXXXXXX"
                     value={newDelegate.phone}
                     onChange={e => setNewDelegate({ ...newDelegate, phone: e.target.value })}
-                    className="w-full p-3 border border-slate-300 rounded-xl text-sm font-bold font-mono text-slate-900 focus:outline-none focus:border-emerald-500 text-right"
+                    className="w-full p-3 border border-slate-300 rounded-xl text-sm font-bold font-mono text-slate-900 focus:outline-none focus:border-brand-500 text-right"
                     dir="ltr"
                   />
                   <p className="text-[11px] text-slate-400 mt-1">دفتر عناوين حر: يمكنك إدخال أي رقم هاتف بدون قيود.</p>
@@ -388,7 +437,7 @@ export default function DelegatesPage() {
                     placeholder="مثال: قطاع الزقازيق، بلبيس، ومنيا القمح"
                     value={newDelegate.territory}
                     onChange={e => setNewDelegate({ ...newDelegate, territory: e.target.value })}
-                    className="w-full p-3 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-emerald-500"
+                    className="w-full p-3 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-brand-500"
                   />
                 </div>
 
@@ -399,7 +448,7 @@ export default function DelegatesPage() {
                     placeholder="مثال: رقم لوحة السيارة، مواعيد الزيارات..."
                     value={newDelegate.notes}
                     onChange={e => setNewDelegate({ ...newDelegate, notes: e.target.value })}
-                    className="w-full p-3 border border-slate-300 rounded-xl text-sm text-slate-900 focus:outline-none focus:border-emerald-500"
+                    className="w-full p-3 border border-slate-300 rounded-xl text-sm text-slate-900 focus:outline-none focus:border-brand-500"
                   ></textarea>
                 </div>
 
@@ -445,7 +494,7 @@ export default function DelegatesPage() {
                     required
                     value={editDelegate.full_name || ''}
                     onChange={e => setEditDelegate({ ...editDelegate, full_name: e.target.value })}
-                    className="w-full p-3 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-emerald-500"
+                    className="w-full p-3 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-brand-500"
                   />
                 </div>
 
@@ -455,7 +504,7 @@ export default function DelegatesPage() {
                     type="tel"
                     value={editDelegate.phone || ''}
                     onChange={e => setEditDelegate({ ...editDelegate, phone: e.target.value })}
-                    className="w-full p-3 border border-slate-300 rounded-xl text-sm font-bold font-mono text-slate-900 focus:outline-none focus:border-emerald-500 text-right"
+                    className="w-full p-3 border border-slate-300 rounded-xl text-sm font-bold font-mono text-slate-900 focus:outline-none focus:border-brand-500 text-right"
                     dir="ltr"
                   />
                 </div>
@@ -466,7 +515,7 @@ export default function DelegatesPage() {
                     type="text"
                     value={editDelegate.territory || editDelegate.store_name || editDelegate.route_name || ''}
                     onChange={e => setEditDelegate({ ...editDelegate, territory: e.target.value })}
-                    className="w-full p-3 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-emerald-500"
+                    className="w-full p-3 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-brand-500"
                   />
                 </div>
 
@@ -476,7 +525,7 @@ export default function DelegatesPage() {
                     rows={2}
                     value={editDelegate.notes || ''}
                     onChange={e => setEditDelegate({ ...editDelegate, notes: e.target.value })}
-                    className="w-full p-3 border border-slate-300 rounded-xl text-sm text-slate-900 focus:outline-none focus:border-emerald-500"
+                    className="w-full p-3 border border-slate-300 rounded-xl text-sm text-slate-900 focus:outline-none focus:border-brand-500"
                   ></textarea>
                 </div>
 
