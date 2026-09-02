@@ -12,9 +12,8 @@ let memoryDelegates: any[] = [];
 async function getNextDelegateCode(adminClient: any): Promise<string> {
   try {
     const { data: delegates } = await adminClient
-      .from('profiles')
+      .from('delegates')
       .select('customer_code')
-      .eq('role', 'delegate')
       .order('created_at', { ascending: false })
       .limit(100);
 
@@ -33,53 +32,49 @@ async function getNextDelegateCode(adminClient: any): Promise<string> {
   }
 }
 
-// GET: List all delegates
+// GET: Fetch delegates directly from delegates table
 export async function GET(req: NextRequest) {
   try {
     const adminClient = createAdminClient();
     const supabase = await createClient();
 
-    let allDelegates: any[] = [];
+    let dbDelegates: any[] = [];
 
-    // 1. Try querying dedicated `delegates` table
+    // 1. Direct query to `delegates` table
     try {
-      const { data: dbDelegates, error: dbErr } = await adminClient
+      let { data, error } = await adminClient
         .from('delegates')
         .select('*')
         .order('created_at', { ascending: false });
 
-      if (!dbErr && dbDelegates && dbDelegates.length > 0) {
-        allDelegates = dbDelegates;
+      if (error || !data) {
+        const fb = await supabase.from('delegates').select('*').order('created_at', { ascending: false });
+        data = fb.data;
+      }
+
+      if (data && data.length > 0) {
+        dbDelegates = data;
       }
     } catch {}
 
-    // 2. Also query `profiles` where role = 'delegate' as fallback / synchronization
-    if (allDelegates.length === 0) {
+    // 2. Fallback query to `profiles` where role = 'delegate'
+    if (dbDelegates.length === 0) {
       try {
-        let { data: profileDelegates, error: profErr } = await adminClient
+        let { data: profileDelegates } = await adminClient
           .from('profiles')
           .select('*')
           .eq('role', 'delegate')
           .order('created_at', { ascending: false });
 
-        if (profErr || !profileDelegates) {
-          const fb = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('role', 'delegate')
-            .order('created_at', { ascending: false });
-          profileDelegates = fb.data;
-        }
-
         if (profileDelegates && profileDelegates.length > 0) {
-          allDelegates = profileDelegates;
+          dbDelegates = profileDelegates;
         }
       } catch {}
     }
 
-    // 3. Merge with in-memory fallback
+    // 3. Merge with memory buffer
     const delMap = new Map<string, any>();
-    allDelegates.forEach(d => delMap.set(d.id, d));
+    dbDelegates.forEach(d => delMap.set(d.id, d));
     memoryDelegates.forEach(d => delMap.set(d.id, d));
 
     const finalDelegates = Array.from(delMap.values()).map((d: any, i: number) => ({
@@ -102,7 +97,7 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// POST: Add a new delegate
+// POST: Add a new delegate directly to delegates table
 export async function POST(req: NextRequest) {
   try {
     const adminClient = createAdminClient();
@@ -136,24 +131,27 @@ export async function POST(req: NextRequest) {
       updated_at: nowIso
     };
 
-    // Save in memory buffer
+    // Save in memory
     memoryDelegates.unshift(delegateRecord);
 
-    // 1. Try inserting into `delegates` table
+    // 1. Insert into `delegates` table
     let inserted = null;
     try {
-      const { data, error } = await adminClient
+      let { data, error } = await adminClient
         .from('delegates')
         .insert([delegateRecord])
         .select()
         .maybeSingle();
 
-      if (!error && data) {
-        inserted = data;
+      if (error || !data) {
+        const fb = await supabase.from('delegates').insert([delegateRecord]).select().maybeSingle();
+        data = fb.data;
       }
+
+      if (data) inserted = data;
     } catch {}
 
-    // 2. Also insert / sync into `profiles` table
+    // 2. Also sync with `profiles` table
     try {
       const profilePayload = {
         id: delegateId,
@@ -170,11 +168,10 @@ export async function POST(req: NextRequest) {
         is_credit_enabled: false,
         created_at: nowIso
       };
-
       await adminClient.from('profiles').insert([profilePayload]);
     } catch {}
 
-    // 3. Resolve current authenticated admin for audit log
+    // 3. Resolve logged in admin for audit log
     let currentAdminProfile: any = null;
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -249,9 +246,12 @@ export async function PUT(req: NextRequest) {
     // Update in memory
     memoryDelegates = memoryDelegates.map(d => d.id === id ? { ...d, ...updates } : d);
 
-    // 1. Try update in `delegates` table
+    // 1. Update in `delegates` table
     try {
-      await adminClient.from('delegates').update(updates).eq('id', id);
+      let { error } = await adminClient.from('delegates').update(updates).eq('id', id);
+      if (error) {
+        await supabase.from('delegates').update(updates).eq('id', id);
+      }
     } catch {}
 
     // 2. Also update in `profiles` table
@@ -265,7 +265,7 @@ export async function PUT(req: NextRequest) {
       await adminClient.from('profiles').update(profileUpdates).eq('id', id);
     } catch {}
 
-    // 3. Resolve current authenticated admin
+    // 3. Resolve logged in admin
     let currentAdminProfile: any = null;
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -349,7 +349,10 @@ export async function DELETE(req: NextRequest) {
 
     // 1. Delete from `delegates` table
     try {
-      await adminClient.from('delegates').delete().eq('id', id);
+      let { error } = await adminClient.from('delegates').delete().eq('id', id);
+      if (error) {
+        await supabase.from('delegates').delete().eq('id', id);
+      }
     } catch {}
 
     // 2. Delete from `profiles` table
@@ -357,7 +360,7 @@ export async function DELETE(req: NextRequest) {
       await adminClient.from('profiles').delete().eq('id', id);
     } catch {}
 
-    // 3. Resolve current authenticated admin
+    // 3. Resolve logged in admin
     let currentAdminProfile: any = null;
     try {
       const { data: { user } } = await supabase.auth.getUser();
