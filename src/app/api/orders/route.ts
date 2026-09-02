@@ -247,20 +247,21 @@ export async function POST(req: NextRequest) {
 
     // 2. Strict Credit Validation: check if remaining credit exceeds available credit
     if (method === 'credit') {
-      const isCreditEnabled = customerProfile?.is_credit_enabled !== false && customerProfile?.credit_enabled !== false;
+      const creditLimit = Number(customerProfile?.credit_limit || 0);
+      const currentDebt = Number(customerProfile?.current_debt !== undefined && customerProfile?.current_debt !== null ? customerProfile.current_debt : (customerProfile?.previous_balance || 0));
+      const isCreditEnabled = customerProfile?.is_credit_enabled !== false && customerProfile?.credit_enabled !== false && creditLimit > 0;
+
       if (!isCreditEnabled) {
         return NextResponse.json({
           error: 'عفواً، خاصية الشراء بالآجل غير مفعلة لحسابك'
         }, { status: 400 });
       }
 
-      const creditLimit = Number(customerProfile?.credit_limit || 0);
-      const currentDebt = prevBalance;
       const availableCredit = Math.max(0, creditLimit - currentDebt);
 
-      if (finalRemaining > availableCredit) {
+      if (availableCredit <= 0 || finalRemaining > availableCredit) {
         return NextResponse.json({
-          error: `عفواً، المبلغ المتبقي للآجل (${finalRemaining} ج.م) يتجاوز الرصيد الائتماني المتاح لك (${availableCredit} ج.م)`
+          error: 'لا يمكن إتمام الطلب، المتبقي الآجل يتجاوز رصيدك الائتماني المتاح'
         }, { status: 400 });
       }
     }

@@ -5,7 +5,8 @@ import { useRouter } from 'next/navigation';
 import { CustomerLayout } from '@/components/layout/customer-layout';
 import { useCart } from '@/components/cart/cart-provider';
 import { useNumberFormat } from '@/context/number-format-context';
-import { CheckCircle2, CreditCard, Banknote, ShieldAlert, Loader2, MapPin, Lock, Info } from 'lucide-react';
+import { CheckCircle2, CreditCard, Banknote, ShieldAlert, Loader2, MapPin, Lock, Info, AlertTriangle } from 'lucide-react';
+import { createClient } from '@/lib/supabase/client';
 
 export default function CheckoutPage() {
   const router = useRouter();
@@ -29,52 +30,54 @@ export default function CheckoutPage() {
   useEffect(() => {
     async function loadData() {
       try {
-        const [authRes, creditRes] = await Promise.all([
-          fetch(`/api/auth/me?t=${Date.now()}`),
-          fetch(`/api/credit?t=${Date.now()}`)
-        ]);
+        const supabase = createClient();
+        const { data: { user } } = await supabase.auth.getUser();
 
         let currentProf: any = null;
-        if (authRes.ok) {
-          const prof = await authRes.json();
-          currentProf = prof.user || prof.data || prof;
+
+        if (user) {
+          const { data: p } = await supabase
+            .from('profiles')
+            .select('id, full_name, store_name, phone, address, credit_limit, current_debt, is_credit_enabled, credit_enabled, customer_code')
+            .eq('id', user.id)
+            .maybeSingle();
+          if (p) {
+            currentProf = p;
+          }
         }
 
-        let fetchedDebt = 0;
-        if (creditRes.ok) {
-          const creditJson = await creditRes.json();
-          if (creditJson.success) {
-            fetchedDebt = Number(creditJson.current_debt || 0);
-            if (!currentProf && creditJson.profile) {
-              currentProf = creditJson.profile;
-            }
+        if (!currentProf) {
+          const authRes = await fetch(`/api/auth/me?t=${Date.now()}`);
+          if (authRes.ok) {
+            const authJson = await authRes.json();
+            currentProf = authJson.user || authJson.data || authJson;
           }
         }
 
         if (currentProf) {
-          const debtFromProfile = currentProf.current_debt !== undefined && currentProf.current_debt !== null 
-            ? Number(currentProf.current_debt) 
-            : fetchedDebt;
-            
+          const debtFromProfile = Number(currentProf.current_debt || 0);
+          const limitFromProfile = Number(currentProf.credit_limit || 0);
+          const available = Math.max(0, limitFromProfile - debtFromProfile);
+
           setCurrentDebt(debtFromProfile);
           setProfile(currentProf);
           setCustomerName(currentProf.store_name || currentProf.full_name || currentProf.name || '');
           setContactPhone(currentProf.phone || '');
           setDeliveryAddress(currentProf.address || '');
 
-          const creditEnabled = Boolean(
+          const isCreditEligible = Boolean(
             currentProf.credit_enabled !== false && 
             currentProf.is_credit_enabled !== false && 
-            (currentProf.credit_enabled === true || currentProf.is_credit_enabled === true || (currentProf.credit_limit && currentProf.credit_limit > 0))
+            limitFromProfile > 0 && 
+            available > 0
           );
-          if (!creditEnabled) {
+
+          if (!isCreditEligible) {
             setPaymentMethod('cash');
           }
-        } else {
-          setCurrentDebt(fetchedDebt);
         }
       } catch (err) {
-        console.error(err);
+        console.error('Checkout load data error:', err);
       } finally {
         setLoading(false);
       }
@@ -82,19 +85,21 @@ export default function CheckoutPage() {
     loadData();
   }, [setPaymentMethod]);
 
+  const creditLimit = Number(profile?.credit_limit || 0);
+  const availableCredit = Math.max(0, creditLimit - currentDebt);
+
   const isCreditAllowed = Boolean(
     profile &&
     profile.credit_enabled !== false &&
     profile.is_credit_enabled !== false &&
-    (profile.credit_enabled === true || profile.is_credit_enabled === true || (profile.credit_limit && profile.credit_limit > 0))
+    creditLimit > 0
   );
 
-  const creditLimit = Number(profile?.credit_limit || 0);
-  const availableCredit = Math.max(0, creditLimit - currentDebt);
+  const isCreditExhausted = availableCredit <= 0;
 
   const cartSubtotal = items.reduce((sum, it) => sum + Number(it.total_price || (it.quantity * (it.unit_price || it.appliedPrice || it.product?.base_price || 0))), 0);
   const numPaid = Math.min(total, Math.max(0, Number(paidAmount || 0)));
-  const remainingCredit = (paymentMethod === 'credit' && isCreditAllowed) ? Math.max(0, total - numPaid) : 0;
+  const remainingCredit = (paymentMethod === 'credit' && isCreditAllowed && !isCreditExhausted) ? Math.max(0, total - numPaid) : 0;
   const cumulativeTotal = total + currentDebt;
 
   const handleCheckout = async () => {
@@ -109,6 +114,11 @@ export default function CheckoutPage() {
     if (paymentMethod === 'credit') {
       if (!isCreditAllowed) {
         setError('خاصية الشراء والدفع الآجل غير مفعلة لحسابك حالياً. يرجى اختيار الدفع نقداً عند الاستلام.');
+        return;
+      }
+
+      if (isCreditExhausted) {
+        setError('رصيدك الائتماني مستنفد بالكامل (0 ج.م). يرجى اختيار الدفع كاش نقداً عند الاستلام.');
         return;
       }
 
@@ -299,54 +309,51 @@ export default function CheckoutPage() {
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">رقم الهاتف الأساسي للتواصل (11 رقم) *</label>
+              <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">رقم الهاتف الأساسي (واتساب / اتصال) *</label>
               <input 
                 type="tel" 
                 required
-                maxLength={11}
                 value={contactPhone}
-                onChange={(e) => setContactPhone(e.target.value.replace(/\D/g, ''))}
+                onChange={(e) => setContactPhone(e.target.value)}
                 placeholder="010XXXXXXXX"
                 dir="ltr"
-                className="w-full p-3 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-sm font-bold text-slate-900 dark:text-white focus:outline-none focus:border-brand-500 font-mono"
+                className="w-full p-3 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-sm font-bold text-slate-900 dark:text-white focus:outline-none focus:border-brand-500 font-mono text-right"
               />
-              <span className="text-[10px] text-slate-400 mt-0.5 block">يجب أن يبدأ بـ 010 أو 011 أو 012 أو 015</span>
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">رقم هاتف إضافي (اختياري)</label>
+              <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">رقم هاتف إضافي / للمحل (اختياري)</label>
               <input 
                 type="tel" 
-                maxLength={11}
                 value={secondaryPhone}
-                onChange={(e) => setSecondaryPhone(e.target.value.replace(/\D/g, ''))}
+                onChange={(e) => setSecondaryPhone(e.target.value)}
                 placeholder="012XXXXXXXX"
                 dir="ltr"
-                className="w-full p-3 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-sm text-slate-900 dark:text-white focus:outline-none focus:border-brand-500 font-mono"
+                className="w-full p-3 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-sm text-slate-900 dark:text-white focus:outline-none focus:border-brand-500 font-mono text-right"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">اسم المندوب المتابع (اختياري)</label>
+              <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">اسم المندوب المسؤول (إن وجد)</label>
               <input 
                 type="text" 
                 value={delegateName}
                 onChange={(e) => setDelegateName(e.target.value)}
-                placeholder="اسم المندوب أو خط السير"
+                placeholder="اكتب اسم مندوب الفرماوي جروب..."
                 className="w-full p-3 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-sm text-slate-900 dark:text-white focus:outline-none focus:border-brand-500"
               />
             </div>
           </div>
 
           <div>
-            <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">العنوان التفصيلي (المحافظة / المركز / الشارع) *</label>
+            <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">عنوان مقر التسليم بالتفصيل *</label>
             <textarea 
               required
               rows={2}
               value={deliveryAddress}
               onChange={(e) => setDeliveryAddress(e.target.value)}
-              placeholder="مثال: الشرقية - الزقازيق - شارع الجلاء بجوار مسجد الفتح"
-              className="w-full p-3 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-sm font-semibold text-slate-900 dark:text-white focus:outline-none focus:border-brand-500"
+              placeholder="المحافظة، المركز، القرية/المدينة، الشارع، علامة مميزة بجوار المحل..."
+              className="w-full p-3 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-sm text-slate-900 dark:text-white focus:outline-none focus:border-brand-500"
             ></textarea>
           </div>
 
@@ -394,35 +401,54 @@ export default function CheckoutPage() {
             </label>
 
             {isCreditAllowed ? (
-              <label 
-                onClick={() => setPaymentMethod('credit')}
-                className={`flex items-center gap-4 p-4 rounded-2xl border-2 cursor-pointer transition-all ${
-                  paymentMethod === 'credit' 
-                    ? 'border-orange-500 bg-orange-50/50 dark:bg-orange-950/40 text-orange-950 dark:text-orange-200 shadow-sm' 
-                    : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/60'
-                }`}
-              >
-                <input 
-                  type="radio" 
-                  name="payment_method" 
-                  value="credit" 
-                  checked={paymentMethod === 'credit'} 
-                  onChange={() => setPaymentMethod('credit')}
-                  className="w-4 h-4 text-orange-600"
-                />
-                <CreditCard className="w-6 h-6 text-orange-600 dark:text-orange-400" />
-                <div className="flex-1">
-                  <div className="flex justify-between items-center flex-wrap gap-1">
-                    <span className="font-black text-sm block">دفع آجل (حساب تاجر معتمد)</span>
-                    <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-950/60 px-2 py-0.5 rounded-lg border border-emerald-200 dark:border-emerald-800">
-                      رصيد متاح: {formatPriceShort(availableCredit)}
+              isCreditExhausted ? (
+                <div className="p-4 rounded-2xl border-2 border-red-200 dark:border-red-900 bg-red-50/50 dark:bg-red-950/30">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-red-100 dark:bg-red-900/60 flex items-center justify-center text-red-600 dark:text-red-400 shrink-0">
+                      <ShieldAlert className="w-5 h-5" />
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex justify-between items-center flex-wrap gap-1">
+                        <span className="font-bold text-xs text-red-900 dark:text-red-200">الدفع الآجل (رصيدك الائتماني مستنفد بالكامل)</span>
+                        <span className="text-[10px] bg-red-100 dark:bg-red-900/60 text-red-700 dark:text-red-300 px-2 py-0.5 rounded font-bold font-mono">0 ج.م متاح</span>
+                      </div>
+                      <span className="text-[11px] text-red-600 dark:text-red-400 block mt-0.5">
+                        الحد الائتماني: {formatPriceShort(creditLimit)} — المديونية الحالية: {formatPriceShort(currentDebt)}. يرجى السداد أو اختيار الدفع كاش.
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <label 
+                  onClick={() => setPaymentMethod('credit')}
+                  className={`flex items-center gap-4 p-4 rounded-2xl border-2 cursor-pointer transition-all ${
+                    paymentMethod === 'credit' 
+                      ? 'border-orange-500 bg-orange-50/50 dark:bg-orange-950/40 text-orange-950 dark:text-orange-200 shadow-sm' 
+                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/60'
+                  }`}
+                >
+                  <input 
+                    type="radio" 
+                    name="payment_method" 
+                    value="credit" 
+                    checked={paymentMethod === 'credit'} 
+                    onChange={() => setPaymentMethod('credit')}
+                    className="w-4 h-4 text-orange-600"
+                  />
+                  <CreditCard className="w-6 h-6 text-orange-600 dark:text-orange-400" />
+                  <div className="flex-1">
+                    <div className="flex justify-between items-center flex-wrap gap-1">
+                      <span className="font-black text-sm block">دفع آجل (حساب تاجر معتمد)</span>
+                      <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-950/60 px-2 py-0.5 rounded-lg border border-emerald-200 dark:border-emerald-800">
+                        رصيد متاح: {formatPriceShort(availableCredit)}
+                      </span>
+                    </div>
+                    <span className="text-xs text-slate-500 dark:text-slate-400 block mt-0.5">
+                      الحد الائتماني: {formatPriceShort(creditLimit)} — المديونية الحالية: {formatPriceShort(currentDebt)}
                     </span>
                   </div>
-                  <span className="text-xs text-slate-500 dark:text-slate-400 block mt-0.5">
-                    الحد الائتماني: {formatPriceShort(creditLimit)} — المديونية الحالية: {formatPriceShort(currentDebt)}
-                  </span>
-                </div>
-              </label>
+                </label>
+              )
             ) : (
               <div className="p-4 rounded-2xl border-2 border-slate-200 dark:border-slate-800 bg-slate-100/70 dark:bg-slate-800/40 opacity-60 cursor-not-allowed">
                 <div className="flex items-center gap-3">
@@ -443,7 +469,7 @@ export default function CheckoutPage() {
             )}
           </div>
 
-          {paymentMethod === 'credit' && (
+          {paymentMethod === 'credit' && !isCreditExhausted && (
             <div className="p-4 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-200 dark:border-slate-700 space-y-3 mt-4">
               <div>
                 <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
@@ -459,19 +485,22 @@ export default function CheckoutPage() {
                   placeholder="0"
                   className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-sm font-bold text-slate-900 dark:text-white font-mono focus:outline-none focus:border-brand-500"
                 />
+                <p className="text-[11px] text-slate-400 mt-1">
+                  أدخل 0 إذا كنت ترغب في ترحيل إجمالي الفاتورة كاملاً على الحساب الآجل.
+                </p>
               </div>
 
-              <div className="flex justify-between items-center pt-2 text-xs font-bold border-t border-slate-200 dark:border-slate-700">
-                <span className="text-slate-600 dark:text-slate-400">المبلغ المتبقي الذي سيُرحل للأجل:</span>
-                <span className="text-orange-700 dark:text-orange-400 font-mono text-sm">{formatPriceShort(remainingCredit)}</span>
+              <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between items-center text-xs">
+                <span className="text-slate-600 dark:text-slate-400 font-bold">المتبقي الذي سيرحل للآجل:</span>
+                <span className="text-sm font-black text-orange-700 dark:text-orange-400 font-mono">
+                  {formatPriceShort(remainingCredit)}
+                </span>
               </div>
 
               {remainingCredit > availableCredit && (
                 <div className="p-3 bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-900 rounded-xl text-xs text-red-700 dark:text-red-300 font-bold flex items-center gap-2">
                   <ShieldAlert className="w-4 h-4 shrink-0 text-red-600" />
-                  <span>
-                    المتبقي الآجل ({formatPriceShort(remainingCredit)}) أكبر من الرصيد المتاح لك ({formatPriceShort(availableCredit)}). يرجى زيادة الدفعة الكاش.
-                  </span>
+                  <span>المبلغ الآجل يتجاوز رصيدك المتاح ({formatPriceShort(availableCredit)}). يرجى زيادة الدفعة الكاش.</span>
                 </div>
               )}
             </div>
@@ -481,18 +510,18 @@ export default function CheckoutPage() {
         {/* Submit Button */}
         <button
           onClick={handleCheckout}
-          disabled={submitting || items.length === 0}
-          className="w-full btn-primary py-4 rounded-2xl font-black text-base flex items-center justify-center gap-2 shadow-xl disabled:opacity-50 cursor-pointer"
+          disabled={submitting || items.length === 0 || (paymentMethod === 'credit' && (isCreditExhausted || remainingCredit > availableCredit))}
+          className="w-full btn-primary py-4 rounded-2xl font-black text-base shadow-xl flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition-all"
         >
           {submitting ? (
             <>
               <Loader2 className="w-5 h-5 animate-spin" />
-              <span>جاري تسجيل وتأكيد الطلب...</span>
+              <span>جاري تسجيل وإرسال طلب التوريد...</span>
             </>
           ) : (
             <>
               <CheckCircle2 className="w-5 h-5" />
-              <span>تأكيد وإرسال طلب التوريد ({formatPriceShort(total)})</span>
+              <span>تأكيد وإرسال طلب التوريد الآن ({formatPriceShort(total)})</span>
             </>
           )}
         </button>

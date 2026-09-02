@@ -207,11 +207,35 @@ export async function POST(request: NextRequest) {
       }).eq('id', custId);
     }
 
-    // 7. Add entry to audit_logs under "الخزينة والتحصيلات"
+    // 7. Resolve current authenticated admin / user profile
+    let currentAdminUser: any = null;
+    let currentAdminProfile: any = null;
+    try {
+      const { data: authData } = await supabase.auth.getUser();
+      currentAdminUser = authData?.user;
+      if (currentAdminUser) {
+        const { data: ap } = await adminClient
+          .from('profiles')
+          .select('id, full_name, store_name, role, email')
+          .eq('id', currentAdminUser.id)
+          .maybeSingle();
+        currentAdminProfile = ap;
+      }
+    } catch {}
+
+    const adminActualName = currentAdminProfile?.full_name || currentAdminProfile?.store_name || user_name || (currentAdminUser?.email ? currentAdminUser.email.split('@')[0] : 'مدير النظام');
+    const adminRole = currentAdminProfile?.role || 'admin';
+
+    // 8. Add entry to audit_logs under "الخزينة والتحصيلات"
     await logAction({
       actionType: 'سند تحصيل نقدية',
       category: 'الخزينة والتحصيلات',
-      details: `تسجيل سند تحصيل نقدي بمبلغ ${payAmount} ج.م للعميل (${custName}) - كود #${custCode} - المتبقي: ${updatedDebt} ج.م - ${notes || 'سداد لحساب الأجل'}`
+      details: `تسجيل سند تحصيل نقدي بمبلغ ${payAmount} ج.م للعميل (${custName}) - كود #${custCode} - المتبقي: ${updatedDebt} ج.م - ${notes || 'سداد لحساب الأجل'}`,
+      user: {
+        id: currentAdminUser?.id,
+        name: adminActualName,
+        role: adminRole
+      }
     });
 
     return NextResponse.json({

@@ -92,11 +92,29 @@ export async function POST(req: NextRequest) {
     inMemoryResetRequests.unshift(newRequest);
     if (inMemoryResetRequests.length > 500) inMemoryResetRequests.pop();
 
+    // Look up customer profile by phone or email if possible
+    let requesterName = phoneOrEmail;
+    try {
+      const cleanInput = phoneOrEmail.replace(/\D/g, '');
+      const { data: prof } = await adminClient
+        .from('profiles')
+        .select('full_name, store_name, phone, email, role')
+        .or(`phone.eq.${cleanInput},phone.eq.${phoneOrEmail},email.eq.${phoneOrEmail}`)
+        .maybeSingle();
+      if (prof) {
+        requesterName = prof.full_name || prof.store_name || prof.phone || phoneOrEmail;
+      }
+    } catch {}
+
     // Log action to audit_logs
     await logAction({
       actionType: 'طلب استرجاع كلمة مرور',
       category: 'الأمان والصلاحيات',
-      details: `تم تقديم طلب استرجاع كلمة مرور جديد من الرقم/البريد: (${phoneOrEmail})`
+      details: `تم تقديم طلب استرجاع كلمة مرور جديد من الرقم/البريد: (${phoneOrEmail})`,
+      user: {
+        name: `${requesterName} (عميل)`,
+        role: 'عميل'
+      }
     });
 
     return NextResponse.json({
@@ -113,6 +131,7 @@ export async function POST(req: NextRequest) {
 // PATCH: Resolve a password reset request
 export async function PATCH(req: NextRequest) {
   try {
+    const supabase = await createClient();
     const body = await req.json().catch(() => ({}));
     const id = body.id || body.requestId;
     const phoneOrEmail = body.phone_or_email;
@@ -148,13 +167,36 @@ export async function PATCH(req: NextRequest) {
       return r;
     });
 
+    // Resolve current authenticated admin
+    let currentAdminUser: any = null;
+    let currentAdminProfile: any = null;
+    try {
+      const { data: authData } = await supabase.auth.getUser();
+      currentAdminUser = authData?.user;
+      if (currentAdminUser) {
+        const { data: ap } = await adminClient
+          .from('profiles')
+          .select('id, full_name, store_name, role, email')
+          .eq('id', currentAdminUser.id)
+          .maybeSingle();
+        currentAdminProfile = ap;
+      }
+    } catch {}
+
+    const adminActualName = currentAdminProfile?.full_name || currentAdminProfile?.store_name || (currentAdminUser?.email ? currentAdminUser.email.split('@')[0] : 'مدير النظام');
+    const adminRole = currentAdminProfile?.role || 'admin';
     const targetCustomer = body.customer_name || body.userName || phoneOrEmail || 'العميل';
 
     // Log action to audit_logs
     await logAction({
       actionType: 'حل طلب استرجاع كلمة مرور',
       category: 'الأمان والصلاحيات',
-      details: `قام المشرف بحل طلب استرجاع كلمة المرور للعميل (${targetCustomer})`
+      details: `تم حل طلب استرجاع كلمة المرور للعميل (${targetCustomer})`,
+      user: {
+        id: currentAdminUser?.id,
+        name: adminActualName,
+        role: adminRole
+      }
     });
 
     return NextResponse.json({
