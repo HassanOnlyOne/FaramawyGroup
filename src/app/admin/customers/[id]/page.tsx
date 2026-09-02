@@ -189,11 +189,12 @@ export default function CustomerLedgerPage() {
 
   const custCodeClean = customer.customer_code ? String(customer.customer_code).replace(/\D/g, '') : (customer.id ? String(customer.id).slice(-4) : '1004');
 
-  // 1. Map Orders to Statement Events (Excluding pure cash orders with 0 remaining debt)
+  // 1. Map Orders to Statement Events (Excluding pending, cancelled, returned, and pure cash orders)
   const statementEvents: any[] = [];
 
   orders.forEach(o => {
-    if (o.status === 'cancelled' || o.status === 'returned') return;
+    // Strictly exclude pending, cancelled, and returned orders from official statement
+    if (o.status === 'pending' || o.status === 'cancelled' || o.status === 'returned') return;
     
     const isCredit = o.payment_method === 'credit';
     const total = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
@@ -253,12 +254,12 @@ export default function CustomerLedgerPage() {
   // 4. Reverse to show newest movements on top for preview and print
   const displayLedgerRows = [...ledgerRowsWithBalance].reverse();
 
-  // Top Card Debt: Strictly unified with the cumulative statement ledger!
+  // Top Card Debt: Strictly equals profile.current_debt or latest ledger running balance
   const finalUnifiedDebt = statementEvents.length > 0 
     ? latestLedgerBalance 
     : Number(customer.current_debt !== undefined && customer.current_debt !== null ? customer.current_debt : 0);
 
-  const creditLimit = Number(customer.credit_limit || 50000);
+  const creditLimit = Number(customer.credit_limit || 0);
   const availableCredit = Math.max(0, creditLimit - finalUnifiedDebt);
 
   return (

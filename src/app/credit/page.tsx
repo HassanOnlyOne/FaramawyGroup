@@ -128,10 +128,10 @@ export default function CreditPage() {
 
   const creditLimit = Number(profile?.credit_limit || 0);
 
-  // Credit orders list (Strictly excluding pure cash orders with remaining_amount 0)
+  // Credit orders list (Strictly excluding pending, cancelled, returned, and pure cash orders)
   const safeOrders = Array.isArray(orders) ? orders : [];
   const creditWithdrawals = safeOrders.filter((o: any) => {
-    if (['cancelled', 'returned'].includes(o.status)) return false;
+    if (['pending', 'cancelled', 'returned'].includes(o.status)) return false;
     const isCredit = o.payment_method === 'credit';
     const tot = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
     const paid = Number(o.paid_amount || 0);
