@@ -180,13 +180,17 @@ export default function OrderDetailPage() {
 
   // Credit limit calculation for customer
   const creditLimit = Number(profile?.credit_limit || 0);
-  const currentTotalDebt = Number(profile?.current_debt !== undefined ? profile.current_debt : (profile?.previous_balance || 0));
+  const currentTotalDebt = Number(profile?.current_debt !== undefined && profile?.current_debt !== null ? profile.current_debt : 0);
+  
+  // Base available credit for customer (e.g. 5,000 - 3,000 = 2,000 EGP)
+  const baseAvailableCredit = Math.max(0, creditLimit - currentTotalDebt);
+  
+  // Old remaining for this specific order
   const oldOrderRemaining = Number(order?.remaining_amount !== undefined ? order.remaining_amount : (order?.payment_method === 'credit' ? Math.max(0, Number(order?.total || 0) - Number(order?.paid_amount || 0)) : 0));
   
-  // Available credit excluding current order's old remaining
-  const baseDebtWithoutOrder = Math.max(0, currentTotalDebt - oldOrderRemaining);
-  const availableCredit = Math.max(0, creditLimit - baseDebtWithoutOrder);
-  const isOverCreditLimit = editablePaymentMethod === 'credit' && newRemainingCredit > availableCredit;
+  // Max credit allowed for this order being edited
+  const maxAllowedForThisOrder = baseAvailableCredit + oldOrderRemaining;
+  const isOverCreditLimit = editablePaymentMethod === 'credit' && newRemainingCredit > maxAllowedForThisOrder;
 
   const isCreditAllowedForCustomer = Boolean(
     profile?.is_credit_enabled !== false && 
@@ -208,7 +212,7 @@ export default function OrderDetailPage() {
     if (isOverCreditLimit) {
       toast({ 
         title: 'تجاوز الحد الائتماني المسموح', 
-        description: `المتبقي الآجل (${formatPriceShort(newRemainingCredit)}) يتجاوز رصيدك الائتماني المتاح (${formatPriceShort(availableCredit)}). يرجى زيادة الدفعة النقدية الكاش.`, 
+        description: `المتبقي الآجل (${formatPriceShort(newRemainingCredit)}) يتجاوز رصيدك الائتماني المتاح (${formatPriceShort(maxAllowedForThisOrder)}). يرجى زيادة الدفعة النقدية الكاش.`, 
         type: 'error' 
       });
       return;
@@ -656,7 +660,7 @@ export default function OrderDetailPage() {
                       <CreditCard className="w-5 h-5 text-orange-600 dark:text-orange-400" />
                       <div>
                         <span className="font-bold text-xs block">دفع آجل (حساب تاجر)</span>
-                        <span className="text-[10px] text-slate-500 dark:text-slate-400">رصيد ائتماني متاح: {formatPriceShort(availableCredit)}</span>
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400">رصيد ائتماني متاح: {formatPriceShort(baseAvailableCredit)}</span>
                       </div>
                     </label>
                   ) : (
@@ -689,7 +693,7 @@ export default function OrderDetailPage() {
                     {isOverCreditLimit && (
                       <div className="p-2.5 bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-900 rounded-xl text-xs text-red-700 dark:text-red-300 font-bold flex items-center gap-2">
                         <ShieldAlert className="w-4 h-4 shrink-0 text-red-600" />
-                        <span>المتبقي الآجل ({formatPriceShort(newRemainingCredit)}) يتجاوز رصيدك المتاح ({formatPriceShort(availableCredit)}). يرجى زيادة الدفعة الكاش.</span>
+                        <span>المتبقي الآجل ({formatPriceShort(newRemainingCredit)}) يتجاوز رصيدك المتاح ({formatPriceShort(maxAllowedForThisOrder)}). يرجى زيادة الدفعة الكاش.</span>
                       </div>
                     )}
                   </div>

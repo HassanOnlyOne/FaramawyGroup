@@ -130,13 +130,13 @@ export async function GET() {
 
     // 6. Card: "إجمالي مديونيات العملاء" (Sum current_debt from profiles for debt > 0)
     const totalReceivables = safeProfiles.reduce((sum: number, p: any) => {
-      const debt = Number(p.current_debt !== undefined && p.current_debt !== null ? p.current_debt : (p.previous_balance || 0));
+      const debt = Number(p.current_debt !== undefined && p.current_debt !== null ? p.current_debt : 0);
       return sum + (debt > 0 ? debt : 0);
     }, 0);
 
     // 7. Card: "عملاء الآجل النشطون"
     const creditCustomersCount = safeProfiles.filter((p: any) => {
-      const debt = Number(p.current_debt !== undefined && p.current_debt !== null ? p.current_debt : (p.previous_balance || 0));
+      const debt = Number(p.current_debt !== undefined && p.current_debt !== null ? p.current_debt : 0);
       return debt > 0;
     }).length;
 
