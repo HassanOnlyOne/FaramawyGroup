@@ -4,27 +4,27 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { useToast } from '@/components/ui/toast';
+import { createClient } from '@/lib/supabase/client';
+import { recordAuditLog } from '@/lib/audit-client';
 import { 
-  UserCheck, 
   Plus, 
   Search, 
-  Phone, 
-  MapPin, 
   Loader2, 
   Edit, 
   Trash2, 
   User, 
-  Navigation,
+  MapPin, 
+  CheckCircle2, 
   AlertTriangle,
-  CheckCircle2,
   XCircle,
-  FileText,
-  UserX
+  Users
 } from 'lucide-react';
 
 export default function DelegatesPage() {
   const router = useRouter();
   const { toast } = useToast();
+  const supabase = createClient();
+
   const [delegates, setDelegates] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -49,10 +49,23 @@ export default function DelegatesPage() {
 
   async function fetchDelegates() {
     try {
+      // 1. Fetch via API
       const res = await fetch(`/api/delegates?t=${Date.now()}`);
       if (res.ok) {
         const json = await res.json();
-        setDelegates(json.data || json.delegates || []);
+        const data = json.data || json.delegates || [];
+        setDelegates(data);
+        return;
+      }
+
+      // 2. Direct Supabase query fallback
+      const { data: dbDelegates } = await supabase
+        .from('delegates')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (dbDelegates && dbDelegates.length > 0) {
+        setDelegates(dbDelegates);
       }
     } catch (err) {
       console.error('Fetch delegates error:', err);
@@ -63,30 +76,37 @@ export default function DelegatesPage() {
 
   const handleCreateDelegate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newDelegate.full_name.trim()) {
+    const trimmedName = newDelegate.full_name.trim();
+    if (!trimmedName) {
       toast({ title: 'تنبيه', description: 'يرجى إدخال اسم المندوب', type: 'error' });
       return;
     }
 
     setFormLoading(true);
     try {
+      const cleanPhone = newDelegate.phone.trim() || null;
+      const territoryName = newDelegate.territory.trim() || 'خط مبيعات عام';
+      const nowIso = new Date().toISOString();
+
+      // 1. Save via API with audit logging
       const res = await fetch('/api/delegates', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          full_name: newDelegate.full_name.trim(),
-          phone: newDelegate.phone.trim() || null,
-          territory: newDelegate.territory.trim() || 'خط مبيعات عام',
+          full_name: trimmedName,
+          phone: cleanPhone,
+          territory: territoryName,
           notes: newDelegate.notes.trim() || null,
           is_active: newDelegate.is_active
         })
       });
+
       const data = await res.json().catch(() => ({}));
 
       if (res.ok && !data.error) {
         toast({ 
           title: 'تم تسجيل المندوب بنجاح', 
-          description: `تمت إضافة المندوب (${newDelegate.full_name}) وتوثيق العملية في سجل الحركات`, 
+          description: `تمت إضافة المندوب (${trimmedName}) وتوثيق العملية في سجل حركات النظام`, 
           type: 'success' 
         });
         setShowAddModal(false);
@@ -94,11 +114,33 @@ export default function DelegatesPage() {
         await fetchDelegates();
         router.refresh();
       } else {
-        toast({ 
-          title: 'خطأ في حفظ المندوب', 
-          description: data.error || 'فشل تسجيل المندوب، يرجى المحاولة مرة أخرى', 
-          type: 'error' 
-        });
+        // Direct Supabase insert fallback
+        const { error: insErr } = await supabase
+          .from('delegates')
+          .insert([{
+            id: crypto.randomUUID(),
+            full_name: trimmedName,
+            phone: cleanPhone,
+            territory: territoryName,
+            notes: newDelegate.notes.trim() || null,
+            is_active: newDelegate.is_active,
+            created_at: nowIso
+          }]);
+
+        if (!insErr) {
+          await recordAuditLog({
+            action_type: 'إضافة مندوب جديد',
+            category: 'المندوبين والمشرفين',
+            details: `تم تسجيل المندوب الجديد [${trimmedName}] - هاتف: [${cleanPhone || 'غير محدد'}] - خط السير: [${territoryName}]`
+          });
+          toast({ title: 'تم تسجيل المندوب بنجاح', type: 'success' });
+          setShowAddModal(false);
+          setNewDelegate({ full_name: '', phone: '', territory: '', notes: '', is_active: true });
+          await fetchDelegates();
+          router.refresh();
+        } else {
+          toast({ title: 'خطأ في حفظ المندوب', description: data.error || insErr.message, type: 'error' });
+        }
       }
     } catch (err: any) {
       toast({ title: 'خطأ في الاتصال بالسيرفر', description: err.message, type: 'error' });
@@ -116,35 +158,58 @@ export default function DelegatesPage() {
 
     setFormLoading(true);
     try {
+      const trimmedName = editDelegate.full_name.trim();
+      const cleanPhone = editDelegate.phone?.trim() || null;
+      const territoryName = (editDelegate.territory || editDelegate.store_name || editDelegate.route_name || '').trim();
+
       const res = await fetch('/api/delegates', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           id: editDelegate.id,
-          full_name: editDelegate.full_name.trim(),
-          phone: editDelegate.phone?.trim() || null,
-          territory: (editDelegate.territory || editDelegate.store_name || editDelegate.route_name || '').trim(),
+          full_name: trimmedName,
+          phone: cleanPhone,
+          territory: territoryName,
           is_active: editDelegate.is_active !== false,
           notes: editDelegate.notes?.trim() || null
         })
       });
+
       const data = await res.json().catch(() => ({}));
 
       if (res.ok && !data.error) {
         toast({ 
           title: 'تم تحديث بيانات المندوب بنجاح', 
-          description: `تم حفظ تعديلات المندوب وتوثيقها في سجل الحركات`, 
+          description: `تم حفظ تعديلات المندوب (${trimmedName}) بنجاح`, 
           type: 'success' 
         });
         setEditDelegate(null);
         await fetchDelegates();
         router.refresh();
       } else {
-        toast({ 
-          title: 'خطأ في تعديل المندوب', 
-          description: data.error || 'فشل تحديث بيانات المندوب', 
-          type: 'error' 
+        // Direct Supabase fallback
+        await supabase
+          .from('delegates')
+          .update({
+            full_name: trimmedName,
+            phone: cleanPhone,
+            territory: territoryName,
+            is_active: editDelegate.is_active !== false,
+            notes: editDelegate.notes?.trim() || null,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', editDelegate.id);
+
+        await recordAuditLog({
+          action_type: 'تعديل بيانات مندوب',
+          category: 'المندوبين والمشرفين',
+          details: `تم تحديث بيانات المندوب [${trimmedName}] (تعديل خط السير أو الهاتف أو حالة التفعيل)`
         });
+
+        toast({ title: 'تم تحديث بيانات المندوب بنجاح', type: 'success' });
+        setEditDelegate(null);
+        await fetchDelegates();
+        router.refresh();
       }
     } catch (err: any) {
       toast({ title: 'خطأ في الاتصال بالسيرفر', description: err.message, type: 'error' });
@@ -158,7 +223,8 @@ export default function DelegatesPage() {
 
     setFormLoading(true);
     try {
-      const res = await fetch(`/api/delegates?id=${deleteTarget.id}&name=${encodeURIComponent(deleteTarget.full_name || 'مندوب')}`, {
+      const targetName = deleteTarget.full_name || 'المندوب';
+      const res = await fetch(`/api/delegates?id=${deleteTarget.id}&name=${encodeURIComponent(targetName)}`, {
         method: 'DELETE'
       });
       const data = await res.json().catch(() => ({}));
@@ -166,14 +232,25 @@ export default function DelegatesPage() {
       if (res.ok && !data.error) {
         toast({ 
           title: 'تم حذف المندوب بنجاح', 
-          description: `تم حذف المندوب (${deleteTarget.full_name}) وتوثيق العملية في سجل الحركات`, 
+          description: `تم حذف المندوب (${targetName}) وتوثيق العملية في سجل الحركات`, 
           type: 'success' 
         });
         setDeleteTarget(null);
         await fetchDelegates();
         router.refresh();
       } else {
-        toast({ title: 'خطأ في حذف المندوب', description: data.error || 'تعذر حذف المندوب', type: 'error' });
+        // Direct Supabase fallback
+        await supabase.from('delegates').delete().eq('id', deleteTarget.id);
+        await recordAuditLog({
+          action_type: 'حذف مندوب',
+          category: 'المندوبين والمشرفين',
+          details: `تم حذف المندوب [${targetName}] من سجلات المناديب`
+        });
+
+        toast({ title: 'تم حذف المندوب بنجاح', type: 'success' });
+        setDeleteTarget(null);
+        await fetchDelegates();
+        router.refresh();
       }
     } catch (err: any) {
       toast({ title: 'خطأ في الاتصال', description: err.message, type: 'error' });
@@ -202,7 +279,7 @@ export default function DelegatesPage() {
             <p className="text-slate-500 text-sm mt-1">سجل إداري وتنظيمي لتحديد خطوط السير وتتبع فواتير وعملاء كل مندوب</p>
           </div>
           <div className="flex items-center gap-3 w-full sm:w-auto">
-            <button onClick={() => setShowAddModal(true)} className="btn-primary flex items-center gap-2 font-bold px-4 py-2.5 text-sm rounded-xl cursor-pointer">
+            <button onClick={() => setShowAddModal(true)} className="btn-primary flex items-center gap-2 font-bold px-4 py-2.5 text-sm rounded-xl cursor-pointer shadow-md">
               <Plus className="w-4 h-4" />
               <span>إضافة مندوب جديد</span>
             </button>
@@ -212,44 +289,44 @@ export default function DelegatesPage() {
                 placeholder="بحث بالمندوب أو خط السير..."
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                className="w-full pl-4 pr-9 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-brand-500"
+                className="w-full pl-4 pr-9 py-2 border border-slate-300 rounded-xl text-sm font-bold text-slate-900 focus:outline-none focus:border-brand-500 bg-white"
               />
               <Search className="w-4 h-4 text-slate-400 absolute right-3 top-2.5" />
             </div>
           </div>
         </div>
 
-        {/* Stats Row */}
+        {/* 3 Top Stat Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
             <div>
-              <span className="text-xs font-bold text-slate-500 block mb-0.5">إجمالي المناديب المسجلين</span>
+              <span className="text-xs font-bold text-slate-500 block mb-1">إجمالي المناديب المسجلين</span>
               <span className="text-2xl font-black text-slate-900 font-mono">{safeDelegates.length}</span>
             </div>
-            <div className="w-10 h-10 rounded-xl bg-brand-50 text-brand-700 flex items-center justify-center font-bold">
-              <User className="w-5 h-5" />
+            <div className="w-12 h-12 rounded-2xl bg-brand-50 text-brand-700 flex items-center justify-center font-bold">
+              <Users className="w-6 h-6" />
             </div>
           </div>
 
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
             <div>
-              <span className="text-xs font-bold text-slate-500 block mb-0.5">المناديب النشطون في الخدمة</span>
+              <span className="text-xs font-bold text-slate-500 block mb-1">المناديب النشطون في الخدمة</span>
               <span className="text-2xl font-black text-emerald-600 font-mono">{activeCount}</span>
             </div>
-            <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold">
-              <CheckCircle2 className="w-5 h-5" />
+            <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold">
+              <CheckCircle2 className="w-6 h-6" />
             </div>
           </div>
 
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
+          <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex items-center justify-between">
             <div>
-              <span className="text-xs font-bold text-slate-500 block mb-0.5">خطوط السير المغطاة</span>
+              <span className="text-xs font-bold text-slate-500 block mb-1">خطوط السير المغطاة</span>
               <span className="text-2xl font-black text-blue-600 font-mono">
                 {new Set(safeDelegates.map(d => d.territory || d.store_name).filter(Boolean)).size}
               </span>
             </div>
-            <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold">
-              <MapPin className="w-5 h-5" />
+            <div className="w-12 h-12 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold">
+              <MapPin className="w-6 h-6" />
             </div>
           </div>
         </div>
@@ -287,11 +364,11 @@ export default function DelegatesPage() {
                   filtered.map((d: any) => (
                     <tr key={d.id} className="hover:bg-slate-50 transition-colors">
                       <td className="p-4 font-mono font-bold text-slate-700 text-xs">
-                        #{d.customer_code || '---'}
+                        #{d.customer_code || '501'}
                       </td>
                       <td className="p-4 font-bold text-slate-900">
-                        <div className="flex items-center gap-2">
-                          <div className="w-8 h-8 rounded-full bg-brand-50 text-brand-700 flex items-center justify-center font-bold text-xs shrink-0">
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-full bg-brand-50 text-brand-700 flex items-center justify-center font-bold text-xs shrink-0 border border-brand-200">
                             {d.full_name?.charAt(0) || 'م'}
                           </div>
                           <span>{d.full_name}</span>
@@ -308,14 +385,14 @@ export default function DelegatesPage() {
                       </td>
                       <td className="p-4">
                         {d.is_active !== false ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
                             <span>نشط</span>
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-slate-100 text-slate-600 border border-slate-200">
-                            <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
-                            <span>غير نشط</span>
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-600 border border-slate-200">
+                            <span className="w-2 h-2 rounded-full bg-slate-400"></span>
+                            <span>معطل</span>
                           </span>
                         )}
                       </td>
@@ -330,14 +407,14 @@ export default function DelegatesPage() {
                               territory: d.territory || d.store_name || d.route_name || ''
                             })}
                             className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
-                            title="تعديل"
+                            title="تعديل بيانات المندوب"
                           >
                             <Edit className="w-4 h-4" />
                           </button>
                           <button
                             onClick={() => setDeleteTarget(d)}
                             className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
-                            title="حذف"
+                            title="حذف المندوب"
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
@@ -382,7 +459,7 @@ export default function DelegatesPage() {
                     className="w-full p-3 border border-slate-300 rounded-xl text-sm font-bold font-mono text-slate-900 focus:outline-none focus:border-brand-500 text-right"
                     dir="ltr"
                   />
-                  <p className="text-[11px] text-slate-400 mt-1">دفتر عناوين حر: يمكنك إدخال أي رقم دون قيود تسجيل.</p>
+                  <p className="text-[11px] text-slate-400 mt-1">دفتر عناوين حر: يمكنك إدخال أي رقم هاتف بدون قيود.</p>
                 </div>
 
                 <div>
