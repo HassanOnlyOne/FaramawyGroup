@@ -20,7 +20,10 @@ import {
   Search, 
   Check, 
   Info,
-  ShoppingCart
+  ShoppingCart,
+  Banknote,
+  CreditCard,
+  ShieldAlert
 } from 'lucide-react';
 import { OrderTimeline } from '@/components/orders/order-timeline';
 import { useNumberFormat } from '@/context/number-format-context';
@@ -41,6 +44,7 @@ export default function OrderDetailPage() {
   const { id } = useParams();
   const [order, setOrder] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [profile, setProfile] = useState<any>(null);
   const { toast } = useToast();
   const router = useRouter();
   const { formatPriceShort, formatNumber } = useNumberFormat();
@@ -48,6 +52,8 @@ export default function OrderDetailPage() {
   // Edit Order Modal States
   const [showEditModal, setShowEditModal] = useState(false);
   const [editableItems, setEditableItems] = useState<any[]>([]);
+  const [editablePaymentMethod, setEditablePaymentMethod] = useState<'cash' | 'credit'>('cash');
+  const [editablePaidAmount, setEditablePaidAmount] = useState<string>('0');
   const [availableProducts, setAvailableProducts] = useState<any[]>([]);
   const [productSearch, setProductSearch] = useState('');
   const [isSavingEdit, setIsSavingEdit] = useState(false);
@@ -55,9 +61,24 @@ export default function OrderDetailPage() {
 
   const fetchOrder = async () => {
     try {
-      const res = await fetch(`/api/orders/${id}?t=${Date.now()}`);
+      const [res, creditRes] = await Promise.all([
+        fetch(`/api/orders/${id}?t=${Date.now()}`),
+        fetch(`/api/credit?t=${Date.now()}`)
+      ]);
+
       const data = await res.json();
       const fetchedOrder = data.data || data.order || (data.id ? data : null);
+
+      if (creditRes.ok) {
+        const creditJson = await creditRes.json();
+        if (creditJson.success && creditJson.profile) {
+          setProfile({
+            ...creditJson.profile,
+            current_debt: creditJson.current_debt,
+            credit_limit: creditJson.credit_limit
+          });
+        }
+      }
 
       if (res.ok && fetchedOrder) {
         setOrder(fetchedOrder);
@@ -91,6 +112,8 @@ export default function OrderDetailPage() {
       min_order_quantity: item.product?.min_order_quantity || 1
     }));
     setEditableItems(initialItems);
+    setEditablePaymentMethod(order.payment_method === 'credit' ? 'credit' : 'cash');
+    setEditablePaidAmount(String(order.paid_amount || 0));
     setShowEditModal(true);
 
     try {
@@ -145,19 +168,54 @@ export default function OrderDetailPage() {
     setProductSearch('');
   };
 
+  // Real-time calculations for Edit Modal
+  const editModalSubtotal = editableItems.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
+  const newTotal = editModalSubtotal;
+  const newCashPaid = editablePaymentMethod === 'cash' 
+    ? newTotal 
+    : Math.min(newTotal, Math.max(0, Number(editablePaidAmount || 0)));
+  const newRemainingCredit = editablePaymentMethod === 'credit' 
+    ? Math.max(0, newTotal - newCashPaid) 
+    : 0;
+
+  // Credit limit calculation for customer
+  const creditLimit = Number(profile?.credit_limit || 0);
+  const currentTotalDebt = Number(profile?.current_debt !== undefined ? profile.current_debt : (profile?.previous_balance || 0));
+  const oldOrderRemaining = Number(order?.remaining_amount !== undefined ? order.remaining_amount : (order?.payment_method === 'credit' ? Math.max(0, Number(order?.total || 0) - Number(order?.paid_amount || 0)) : 0));
+  
+  // Available credit excluding current order's old remaining
+  const baseDebtWithoutOrder = Math.max(0, currentTotalDebt - oldOrderRemaining);
+  const availableCredit = Math.max(0, creditLimit - baseDebtWithoutOrder);
+  const isOverCreditLimit = editablePaymentMethod === 'credit' && newRemainingCredit > availableCredit;
+
+  const isCreditAllowedForCustomer = Boolean(
+    profile?.is_credit_enabled !== false && 
+    profile?.credit_enabled !== false && 
+    creditLimit > 0
+  );
+
   const handleSaveOrderEdit = async () => {
     if (editableItems.length === 0) {
       toast({ title: 'تنبيه', description: 'الطلب يجب أن يحتوي على أصناف', type: 'error' });
       return;
     }
 
+    if (editablePaymentMethod === 'credit' && !isCreditAllowedForCustomer) {
+      toast({ title: 'الدفع الآجل غير مفعل', description: 'خاصية الشراء بالآجل غير مفعلة لحسابك. يرجى اختيار الدفع كاش.', type: 'error' });
+      return;
+    }
+
+    if (isOverCreditLimit) {
+      toast({ 
+        title: 'تجاوز الحد الائتماني المسموح', 
+        description: `المتبقي الآجل (${formatPriceShort(newRemainingCredit)}) يتجاوز رصيدك الائتماني المتاح (${formatPriceShort(availableCredit)}). يرجى زيادة الدفعة النقدية الكاش.`, 
+        type: 'error' 
+      });
+      return;
+    }
+
     setIsSavingEdit(true);
     try {
-      const subtotal = editableItems.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
-      const deliveryFee = Number(order.delivery_fee || order.shipping_fee || 0);
-      const discount = Number(order.discount || 0);
-      const totalAmount = Math.max(0, subtotal + deliveryFee - discount);
-
       const payload = {
         items: editableItems.map(item => ({
           product_id: item.product_id || item.id,
@@ -166,9 +224,12 @@ export default function OrderDetailPage() {
           unit_price: item.unit_price,
           total_price: item.quantity * item.unit_price
         })),
-        subtotal,
-        total: totalAmount,
-        total_amount: totalAmount,
+        subtotal: newTotal,
+        total: newTotal,
+        total_amount: newTotal,
+        paid_amount: newCashPaid,
+        remaining_amount: newRemainingCredit,
+        payment_method: editablePaymentMethod,
         status: 'pending'
       };
 
@@ -181,7 +242,7 @@ export default function OrderDetailPage() {
       const resData = await res.json().catch(() => ({}));
 
       if (res.ok && resData.success !== false) {
-        toast({ title: 'تم تعديل الطلب بنجاح', description: 'تم تحديث أصناف الفاتورة والإجمالي الجديد', type: 'success' });
+        toast({ title: 'تم حفظ وتحديث الطلب بنجاح', description: 'تم تحديث أصناف الفاتورة وطريقة السداد والإجمالي الجديد', type: 'success' });
         setShowEditModal(false);
         await fetchOrder();
       } else {
@@ -241,8 +302,6 @@ export default function OrderDetailPage() {
   const paidVal = Number(order.paid_amount || 0);
   const remVal = Number(order.remaining_amount !== undefined ? order.remaining_amount : Math.max(0, totalVal - paidVal));
 
-  const editModalSubtotal = editableItems.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
-
   const filteredProductsToAdd = availableProducts.filter(p => {
     if (!productSearch.trim()) return false;
     const term = productSearch.toLowerCase();
@@ -283,7 +342,7 @@ export default function OrderDetailPage() {
               <div>
                 <h3 className="text-sm sm:text-base font-bold text-amber-950 dark:text-amber-200">الطلب قيد المراجعة ويمكنك تعديله</h3>
                 <p className="text-xs text-amber-700 dark:text-amber-300 mt-0.5">
-                  يمكنك تعديل الكميات، إضافة أو حذف أصناف، أو إلغاء الطلب قبل اعتماده من الإدارة
+                  يمكنك تعديل الكميات، طريقة السداد، إضافة أو حذف أصناف قبل اعتماد الطلب
                 </p>
               </div>
             </div>
@@ -347,7 +406,7 @@ export default function OrderDetailPage() {
                     className="text-xs font-bold text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1 cursor-pointer"
                   >
                     <Edit3 className="w-3.5 h-3.5" />
-                    <span>تعديل الأصناف</span>
+                    <span>تعديل الأصناف وطريقة السداد</span>
                   </button>
                 )}
               </div>
@@ -423,7 +482,7 @@ export default function OrderDetailPage() {
         </div>
       </div>
 
-      {/* Customer Edit Order Modal */}
+      {/* Enhanced Customer Edit Order Modal */}
       {showEditModal && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-3 sm:p-4 backdrop-blur-sm" dir="rtl">
           <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden border border-slate-200 dark:border-slate-800">
@@ -432,7 +491,7 @@ export default function OrderDetailPage() {
               <div className="flex items-center gap-2">
                 <ShoppingCart className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
                 <h3 className="font-black text-base sm:text-lg text-slate-900 dark:text-white">
-                  تعديل أصناف الطلب #{formatNumber(invClean)}
+                  تعديل أصناف وطريقة سداد الطلب #{formatNumber(invClean)}
                 </h3>
               </div>
               <button 
@@ -494,7 +553,7 @@ export default function OrderDetailPage() {
 
               {/* Items List */}
               <div className="space-y-3">
-                <h4 className="text-xs font-black text-slate-800 dark:text-slate-200">الأصناف الحالية في الطلب ({editableItems.length})</h4>
+                <h4 className="text-xs font-black text-slate-800 dark:text-slate-200">الأصناف في الطلب ({editableItems.length})</h4>
                 <div className="space-y-2.5">
                   {editableItems.map(item => (
                     <div 
@@ -549,13 +608,100 @@ export default function OrderDetailPage() {
                 </div>
               </div>
 
+              {/* Payment Method Selector in Edit Modal */}
+              <div className="space-y-3 pt-3 border-t border-slate-200 dark:border-slate-800">
+                <h4 className="text-xs font-black text-slate-800 dark:text-slate-200">طريقة السداد للطلب:</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <label 
+                    onClick={() => setEditablePaymentMethod('cash')}
+                    className={`flex items-center gap-3 p-3 rounded-2xl border-2 cursor-pointer transition-all ${
+                      editablePaymentMethod === 'cash' 
+                        ? 'border-emerald-500 bg-emerald-50/50 dark:bg-emerald-950/40 text-emerald-950 dark:text-emerald-200' 
+                        : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200'
+                    }`}
+                  >
+                    <input 
+                      type="radio" 
+                      name="edit_pm" 
+                      value="cash" 
+                      checked={editablePaymentMethod === 'cash'} 
+                      onChange={() => setEditablePaymentMethod('cash')}
+                      className="w-4 h-4 text-emerald-600"
+                    />
+                    <Banknote className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                    <div>
+                      <span className="font-bold text-xs block">سداد كاش بالكامل</span>
+                      <span className="text-[10px] text-slate-500 dark:text-slate-400">بدون إضافة أي مديونية للآجل</span>
+                    </div>
+                  </label>
+
+                  {isCreditAllowedForCustomer ? (
+                    <label 
+                      onClick={() => setEditablePaymentMethod('credit')}
+                      className={`flex items-center gap-3 p-3 rounded-2xl border-2 cursor-pointer transition-all ${
+                        editablePaymentMethod === 'credit' 
+                          ? 'border-orange-500 bg-orange-50/50 dark:bg-orange-950/40 text-orange-950 dark:text-orange-200' 
+                          : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200'
+                      }`}
+                    >
+                      <input 
+                        type="radio" 
+                        name="edit_pm" 
+                        value="credit" 
+                        checked={editablePaymentMethod === 'credit'} 
+                        onChange={() => setEditablePaymentMethod('credit')}
+                        className="w-4 h-4 text-orange-600"
+                      />
+                      <CreditCard className="w-5 h-5 text-orange-600 dark:text-orange-400" />
+                      <div>
+                        <span className="font-bold text-xs block">دفع آجل (حساب تاجر)</span>
+                        <span className="text-[10px] text-slate-500 dark:text-slate-400">رصيد ائتماني متاح: {formatPriceShort(availableCredit)}</span>
+                      </div>
+                    </label>
+                  ) : (
+                    <div className="p-3 rounded-2xl border-2 border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800/40 opacity-60 flex items-center gap-2">
+                      <CreditCard className="w-5 h-5 text-slate-400" />
+                      <span className="text-xs text-slate-500">الآجل غير مفعل لحسابك</span>
+                    </div>
+                  )}
+                </div>
+
+                {editablePaymentMethod === 'credit' && (
+                  <div className="p-3 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-200 dark:border-slate-700 space-y-2">
+                    <label className="block text-xs font-bold text-slate-800 dark:text-slate-200">
+                      المبلغ المدفوع كاش الآن (عربون أو دفعة تحت الحساب):
+                    </label>
+                    <input 
+                      type="number"
+                      min="0"
+                      max={newTotal}
+                      step="50"
+                      value={editablePaidAmount}
+                      onChange={e => setEditablePaidAmount(e.target.value)}
+                      className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-xs font-bold text-slate-900 dark:text-white font-mono focus:outline-none focus:border-brand-500"
+                    />
+                    <div className="flex justify-between items-center text-xs font-bold pt-1">
+                      <span className="text-slate-600 dark:text-slate-400">المبلغ المتبقي الذي سيرحل للآجل:</span>
+                      <span className="text-orange-700 dark:text-orange-400 font-mono text-sm">{formatPriceShort(newRemainingCredit)}</span>
+                    </div>
+
+                    {isOverCreditLimit && (
+                      <div className="p-2.5 bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-900 rounded-xl text-xs text-red-700 dark:text-red-300 font-bold flex items-center gap-2">
+                        <ShieldAlert className="w-4 h-4 shrink-0 text-red-600" />
+                        <span>المتبقي الآجل ({formatPriceShort(newRemainingCredit)}) يتجاوز رصيدك المتاح ({formatPriceShort(availableCredit)}). يرجى زيادة الدفعة الكاش.</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
               {/* Total Calculation Summary */}
               <div className="p-4 bg-emerald-50/60 dark:bg-emerald-950/30 rounded-2xl border border-emerald-200 dark:border-emerald-900/50 flex justify-between items-center">
                 <span className="font-bold text-xs sm:text-sm text-emerald-950 dark:text-emerald-200">
                   إجمالي الطلب المعدل:
                 </span>
                 <span className="text-lg sm:text-xl font-black text-emerald-700 dark:text-emerald-400 font-mono">
-                  {formatPriceShort(editModalSubtotal)}
+                  {formatPriceShort(newTotal)}
                 </span>
               </div>
             </div>
@@ -564,9 +710,9 @@ export default function OrderDetailPage() {
             <div className="p-4 sm:p-5 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-850 flex gap-2">
               <button
                 type="button"
-                disabled={isSavingEdit || editableItems.length === 0}
+                disabled={isSavingEdit || editableItems.length === 0 || isOverCreditLimit}
                 onClick={handleSaveOrderEdit}
-                className="flex-1 btn-primary py-3 rounded-xl font-bold text-xs shadow-sm flex items-center justify-center gap-2 cursor-pointer"
+                className="flex-1 btn-primary py-3 rounded-xl font-bold text-xs shadow-sm flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
               >
                 {isSavingEdit ? (
                   <>

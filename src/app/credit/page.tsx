@@ -126,15 +126,7 @@ export default function CreditPage() {
       )
     : false;
 
-  // Pure direct read of profile current debt & limit
-  const currentDebt = Number(
-    profile?.current_debt !== undefined && profile.current_debt !== null
-      ? profile.current_debt 
-      : (profile?.previous_balance !== undefined ? profile.previous_balance : 0)
-  );
-
   const creditLimit = Number(profile?.credit_limit || 0);
-  const availableCredit = Math.max(0, creditLimit - currentDebt);
 
   // Credit orders list (Strictly excluding pure cash orders with remaining_amount 0)
   const safeOrders = Array.isArray(orders) ? orders : [];
@@ -146,6 +138,46 @@ export default function CreditPage() {
     const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, tot - paid) : 0));
     return isCredit || rem > 0;
   });
+
+  // Calculate Unified Statement Ledger & Running Balance
+  const statementEvents: any[] = [];
+
+  creditWithdrawals.forEach((o: any) => {
+    const tot = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
+    const paid = Number(o.paid_amount || 0);
+    const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : Math.max(0, tot - paid));
+    const debitAmount = rem > 0 ? rem : tot;
+
+    statementEvents.push({
+      date: new Date(o.created_at),
+      debit: debitAmount,
+      credit: 0
+    });
+  });
+
+  payments.forEach((p: any) => {
+    statementEvents.push({
+      date: new Date(p.created_at || p.payment_date),
+      debit: 0,
+      credit: Number(p.amount || 0)
+    });
+  });
+
+  statementEvents.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+  let runningBalance = 0;
+  statementEvents.forEach(ev => {
+    runningBalance += (ev.debit - ev.credit);
+  });
+
+  const latestLedgerBalance = Math.max(0, runningBalance);
+
+  // Top Card Debt: Strictly unified with the cumulative statement ledger!
+  const finalUnifiedDebt = statementEvents.length > 0 
+    ? latestLedgerBalance 
+    : Number(profile?.current_debt !== undefined && profile?.current_debt !== null ? profile.current_debt : (profile?.previous_balance || 0));
+
+  const availableCredit = Math.max(0, creditLimit - finalUnifiedDebt);
 
   const contactPhone = BRAND.contacts[0] || '01066918217';
 
@@ -218,7 +250,7 @@ export default function CreditPage() {
                   <CreditCard className="w-5 h-5" />
                 </div>
                 <p className="text-xs font-bold text-red-700 dark:text-red-400 mb-1">الرصيد الحالي (مديونية مستحقة)</p>
-                <p className="text-2xl font-black text-red-800 dark:text-red-300 font-mono">{formatPriceShort(currentDebt)}</p>
+                <p className="text-2xl font-black text-red-800 dark:text-red-300 font-mono">{formatPriceShort(finalUnifiedDebt)}</p>
               </div>
 
               <div className="bg-slate-50 dark:bg-slate-900 p-4 sm:p-5 rounded-3xl border border-slate-200 dark:border-slate-800 text-center shadow-sm">

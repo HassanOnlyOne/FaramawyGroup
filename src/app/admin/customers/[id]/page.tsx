@@ -5,7 +5,7 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { useToast } from '@/components/ui/toast';
-import { ArrowRight, DollarSign, Printer, Loader2, Phone, ShieldCheck, FileText, CheckCircle2 } from 'lucide-react';
+import { ArrowRight, DollarSign, Printer, Loader2, Phone, FileText } from 'lucide-react';
 import { useNumberFormat } from '@/context/number-format-context';
 import { BRAND } from '@/lib/constants';
 
@@ -151,17 +151,6 @@ export default function CustomerLedgerPage() {
         };
 
         setPayments(prev => [newPayObj, ...prev]);
-        setCustomer((prev: any) => {
-          if (!prev) return prev;
-          const currentBal = Number(prev.current_debt !== undefined && prev.current_debt !== null ? prev.current_debt : (prev.previous_balance || 0));
-          const newBal = Math.max(0, currentBal - amountVal);
-          return {
-            ...prev,
-            previous_balance: newBal,
-            current_debt: newBal
-          };
-        });
-
         toast({ title: 'تم تسجيل تحصيل النقدية وتحديث المديونية بنجاح', type: 'success' });
         setShowPaymentModal(false);
         await fetchCustomerData();
@@ -256,30 +245,21 @@ export default function CustomerLedgerPage() {
     };
   });
 
+  // Final balance from the last chronological event in the cumulative ledger
+  const latestLedgerBalance = ledgerRowsWithBalance.length > 0 
+    ? ledgerRowsWithBalance[ledgerRowsWithBalance.length - 1].runningBalance 
+    : 0;
+
   // 4. Reverse to show newest movements on top for preview and print
   const displayLedgerRows = [...ledgerRowsWithBalance].reverse();
 
-  // Top Card Debt: Sum of (remaining_amount for credit orders) - sum of (customer_payments)
-  const totalCustomerPayments = payments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
-  
-  const totalCreditOrdersDebt = orders
-    .filter(o => o.status !== 'cancelled' && o.status !== 'returned')
-    .reduce((sum, o) => {
-      const isCredit = o.payment_method === 'credit';
-      const tot = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
-      const pd = Number(o.paid_amount || 0);
-      const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, tot - pd) : 0));
-      if (!isCredit && rem <= 0) return sum;
-      return sum + rem;
-    }, 0);
+  // Top Card Debt: Strictly unified with the cumulative statement ledger!
+  const finalUnifiedDebt = statementEvents.length > 0 
+    ? latestLedgerBalance 
+    : Number(customer.current_debt !== undefined && customer.current_debt !== null ? customer.current_debt : 0);
 
-  const calculatedNetDebt = Math.max(0, totalCreditOrdersDebt - totalCustomerPayments);
-
-  const currentDebtFromProfile = Number(
-    customer.current_debt !== undefined && customer.current_debt !== null 
-      ? customer.current_debt 
-      : calculatedNetDebt
-  );
+  const creditLimit = Number(customer.credit_limit || 50000);
+  const availableCredit = Math.max(0, creditLimit - finalUnifiedDebt);
 
   return (
     <AdminLayout>
@@ -296,7 +276,7 @@ export default function CustomerLedgerPage() {
             </div>
             <div className="text-left">
               <p>تاريخ الطباعة: {new Date().toLocaleDateString('ar-EG')}</p>
-              <p className="font-bold text-sm">المديونية الحالية المستحقة: {formatPriceShort(currentDebtFromProfile)}</p>
+              <p className="font-bold text-sm">المديونية الحالية المستحقة: {formatPriceShort(finalUnifiedDebt)}</p>
             </div>
           </div>
         </div>
@@ -341,20 +321,18 @@ export default function CustomerLedgerPage() {
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
           <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm">
             <span className="text-xs font-bold text-slate-500 dark:text-slate-400 block mb-1">إجمالي المديونية المتبقية المستحقة</span>
-            <span className="text-3xl font-black text-red-600 dark:text-red-400 font-mono">{formatPriceShort(currentDebtFromProfile)}</span>
+            <span className="text-3xl font-black text-red-600 dark:text-red-400 font-mono">{formatPriceShort(finalUnifiedDebt)}</span>
           </div>
           <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm">
             <div className="flex justify-between items-center mb-1">
               <span className="text-xs font-bold text-slate-500 dark:text-slate-400">الحد الائتماني المعتمد</span>
               <button onClick={() => setShowCreditModal(true)} className="text-[11px] text-brand-600 dark:text-emerald-400 hover:underline font-bold print:hidden">تعديل</button>
             </div>
-            <span className="text-3xl font-black text-slate-900 dark:text-white font-mono">{formatPriceShort(customer.credit_limit || 50000)}</span>
+            <span className="text-3xl font-black text-slate-900 dark:text-white font-mono">{formatPriceShort(creditLimit)}</span>
           </div>
           <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm">
-            <span className="text-xs font-bold text-slate-500 dark:text-slate-400 block mb-1">حالة الشراء بالأجل</span>
-            <span className={`inline-block mt-1 px-3 py-1 rounded-full text-xs font-bold ${customer.credit_enabled !== false ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800' : 'bg-red-100 dark:bg-red-950/60 text-red-800 dark:text-red-300 border border-red-200 dark:border-red-800'}`}>
-              {customer.credit_enabled !== false ? 'مفعّل ✓' : 'معطّل ✗'}
-            </span>
+            <span className="text-xs font-bold text-slate-500 dark:text-slate-400 block mb-1">الرصيد الائتماني المتاح للشراء</span>
+            <span className="text-3xl font-black text-emerald-600 dark:text-emerald-400 font-mono">{formatPriceShort(availableCredit)}</span>
           </div>
         </div>
 
