@@ -59,6 +59,7 @@ export default function PaymentsPage() {
         body: JSON.stringify({
           customer_id: selectedCustomer.id,
           amount: parseFloat(formData.get('amount') as string),
+          payment_method: 'cash',
           notes: formData.get('notes')
         })
       });
@@ -95,7 +96,7 @@ export default function PaymentsPage() {
         <div className="flex justify-between items-center">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">سجل التحصيلات ونقدية العملاء</h1>
-            <p className="text-slate-500 text-sm mt-1">تسجيل المبالغ المستلمة وخصمها من المديونية</p>
+            <p className="text-slate-500 text-sm mt-1">تسجيل المبالغ المستلمة وخصمها من مديونية الحساب</p>
           </div>
           <button onClick={() => setShowModal(true)} className="btn-primary flex items-center gap-2 font-bold">
             <Plus className="w-4 h-4" />
@@ -123,7 +124,7 @@ export default function PaymentsPage() {
                   safePayments.map(payment => (
                     <tr key={payment.id} className="hover:bg-slate-50 transition-colors">
                       <td className="p-4 text-slate-600 font-medium">
-                        {new Date(payment.created_at).toLocaleDateString('ar-EG', {
+                        {new Date(payment.created_at || payment.payment_date).toLocaleDateString('ar-EG', {
                           year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
                         })}
                       </td>
@@ -159,12 +160,14 @@ export default function PaymentsPage() {
                   <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-xl flex items-center justify-between">
                     <div>
                       <p className="font-bold text-emerald-900 text-sm">{selectedCustomer.store_name || selectedCustomer.full_name}</p>
-                      <p className="text-xs text-emerald-700">كود: <span className="font-mono font-bold">{selectedCustomer.customer_code || '---'}</span> | المديونية الحالية: <span className="font-bold text-red-600">{formatPriceShort(selectedCustomer.previous_balance || 0)}</span></p>
+                      <p className="text-xs text-emerald-700">
+                        كود: <span className="font-mono font-bold">{selectedCustomer.customer_code || '---'}</span> | المديونية الحالية: <span className="font-bold text-red-600">{formatPriceShort(selectedCustomer.current_debt !== undefined && selectedCustomer.current_debt !== null ? selectedCustomer.current_debt : (selectedCustomer.previous_balance || 0))}</span>
+                      </p>
                     </div>
                     <button 
                       type="button" 
                       onClick={() => { setSelectedCustomer(null); setDropdownOpen(true); }}
-                      className="text-xs text-red-600 font-bold bg-white px-2 py-1 rounded border border-red-200 hover:bg-red-50"
+                      className="text-xs text-red-600 font-bold bg-white px-2 py-1 rounded border border-red-200 hover:bg-red-50 cursor-pointer"
                     >
                       تغيير
                     </button>
@@ -188,26 +191,29 @@ export default function PaymentsPage() {
                         {filteredCustomers.length === 0 ? (
                           <div className="p-3 text-xs text-slate-500 text-center">لا يوجد عميل يطابق البحث</div>
                         ) : (
-                          filteredCustomers.map(c => (
-                            <div 
-                              key={c.id} 
-                              onClick={() => {
-                                setSelectedCustomer(c);
-                                setCustomerSearch(c.store_name || c.full_name);
-                                setDropdownOpen(false);
-                              }}
-                              className="p-3 hover:bg-emerald-50 cursor-pointer transition-colors flex justify-between items-center"
-                            >
-                              <div>
-                                <span className="font-bold text-slate-900 text-sm block">{c.store_name || c.full_name || c.name}</span>
-                                {c.full_name && c.store_name && <span className="text-xs text-slate-500 block">{c.full_name}</span>}
+                          filteredCustomers.map(c => {
+                            const custDebt = Number(c.current_debt !== undefined && c.current_debt !== null ? c.current_debt : (c.previous_balance || 0));
+                            return (
+                              <div 
+                                key={c.id} 
+                                onClick={() => {
+                                  setSelectedCustomer(c);
+                                  setCustomerSearch(c.store_name || c.full_name);
+                                  setDropdownOpen(false);
+                                }}
+                                className="p-3 hover:bg-emerald-50 cursor-pointer transition-colors flex justify-between items-center"
+                              >
+                                <div>
+                                  <span className="font-bold text-slate-900 text-sm block">{c.store_name || c.full_name || c.name}</span>
+                                  {c.full_name && c.store_name && <span className="text-xs text-slate-500 block">{c.full_name}</span>}
+                                </div>
+                                <div className="text-left">
+                                  {c.customer_code && <span className="text-xs font-mono font-bold bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded border border-slate-200 block">{c.customer_code}</span>}
+                                  <span className="text-xs text-red-600 font-bold block mt-0.5">مديونية: {formatPriceShort(custDebt)}</span>
+                                </div>
                               </div>
-                              <div className="text-left">
-                                {c.customer_code && <span className="text-xs font-mono font-bold bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded border border-slate-200 block">{c.customer_code}</span>}
-                                <span className="text-xs text-red-600 font-bold block mt-0.5">مديونية: {formatPriceShort(c.previous_balance || 0)}</span>
-                              </div>
-                            </div>
-                          ))
+                            );
+                          })
                         )}
                       </div>
                     )}
@@ -224,10 +230,10 @@ export default function PaymentsPage() {
                 <textarea name="notes" className="w-full p-2.5 border border-slate-300 rounded-xl text-sm" rows={2} placeholder="تفاصيل الإيصال، اسم المندوب..."></textarea>
               </div>
               <div className="pt-3 flex gap-2">
-                <button type="submit" disabled={formLoading || !selectedCustomer} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 rounded-xl font-bold transition-all shadow">
+                <button type="submit" disabled={formLoading || !selectedCustomer} className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 rounded-xl font-bold transition-all shadow cursor-pointer">
                   {formLoading ? 'جاري التسجيل...' : 'تأكيد التسديد'}
                 </button>
-                <button type="button" onClick={() => setShowModal(false)} className="flex-1 bg-slate-100 text-slate-800 py-2.5 rounded-xl font-bold border border-slate-200">إلغاء</button>
+                <button type="button" onClick={() => setShowModal(false)} className="flex-1 bg-slate-100 text-slate-800 py-2.5 rounded-xl font-bold border border-slate-200 cursor-pointer">إلغاء</button>
               </div>
             </form>
           </div>

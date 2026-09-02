@@ -5,8 +5,9 @@ import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { useToast } from '@/components/ui/toast';
-import { ArrowRight, Plus, DollarSign, Printer, Loader2, Phone, Building, ShieldCheck, Receipt, FileText } from 'lucide-react';
+import { ArrowRight, DollarSign, Printer, Loader2, Phone, ShieldCheck, FileText, CheckCircle2 } from 'lucide-react';
 import { useNumberFormat } from '@/context/number-format-context';
+import { BRAND } from '@/lib/constants';
 
 export default function CustomerLedgerPage() {
   const { id } = useParams();
@@ -131,18 +132,19 @@ export default function CustomerLedgerPage() {
           customer_id: id,
           customer_code: custCode,
           amount: amountVal,
+          payment_method: 'cash',
           notes: notesVal,
           user_name: 'المدير العام'
         })
       });
       
       if (res.ok) {
-        // Optimistically update payments & customer debt immediately
         const newPayObj = {
-          id: `pay-${Date.now()}`,
+          id: crypto.randomUUID(),
           customer_id: id,
           customer_code: custCode,
           amount: amountVal,
+          payment_method: 'cash',
           payment_date: new Date().toISOString(),
           created_at: new Date().toISOString(),
           notes: notesVal
@@ -151,7 +153,7 @@ export default function CustomerLedgerPage() {
         setPayments(prev => [newPayObj, ...prev]);
         setCustomer((prev: any) => {
           if (!prev) return prev;
-          const currentBal = Number(prev.current_debt !== undefined ? prev.current_debt : (prev.previous_balance || 5100));
+          const currentBal = Number(prev.current_debt !== undefined && prev.current_debt !== null ? prev.current_debt : (prev.previous_balance || 0));
           const newBal = Math.max(0, currentBal - amountVal);
           return {
             ...prev,
@@ -162,7 +164,6 @@ export default function CustomerLedgerPage() {
 
         toast({ title: 'تم تسجيل تحصيل النقدية وتحديث المديونية بنجاح', type: 'success' });
         setShowPaymentModal(false);
-        // Refresh without resetting state
         await fetchCustomerData();
       } else {
         toast({ title: 'خطأ في تسجيل التحصيل', type: 'error' });
@@ -199,47 +200,50 @@ export default function CustomerLedgerPage() {
 
   const custCodeClean = customer.customer_code ? String(customer.customer_code).replace(/\D/g, '') : (customer.id ? String(customer.id).slice(-4) : '1004');
 
-  // Combine orders & payments into single chronological ledger statement
+  // 1. Map Orders to Statement Events
   const statementEvents: any[] = [];
 
-  // If matched orders exist, map them
-  if (orders.length > 0) {
-    orders.forEach(o => {
-      const total = Number(o.total !== undefined ? o.total : (o.total_amount || 0));
-      const paid = Number(o.paid_amount || 0);
-      const rem = Number(o.remaining_amount !== undefined ? o.remaining_amount : (o.payment_method === 'credit' ? total : 0));
-      
-      const invNo = o.invoice_no || o.order_number || String(o.id).slice(0, 8);
-      const cleanInv = String(invNo).replace(/\D/g, '') || invNo;
+  orders.forEach(o => {
+    if (o.status === 'cancelled') return;
+    const total = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
+    const paid = Number(o.paid_amount || 0);
+    const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : Math.max(0, total - paid));
+    
+    const invNo = o.invoice_no || o.order_number || String(o.id).slice(0, 8);
+    const cleanInv = String(invNo).replace(/\D/g, '') || invNo;
+    const debitAmount = o.payment_method === 'credit' ? (rem > 0 ? rem : total) : (rem > 0 ? rem : total);
 
-      statementEvents.push({
-        date: new Date(o.created_at),
-        type: 'فاتورة مبيعات أجل',
-        ref: `فاتورة #${formatNumber(cleanInv)}`,
-        notes: paid > 0 ? `إجمالي ${formatPriceShort(total)} (مسدد كاش ${formatPriceShort(paid)})` : `فاتورة توريد بضاعة أجل`,
-        debit: rem > 0 ? rem : (o.payment_method === 'credit' ? total : 0),
-        credit: 0,
-      });
+    statementEvents.push({
+      id: o.id,
+      date: new Date(o.created_at),
+      type: 'فاتورة توريد',
+      ref: `فاتورة #${formatNumber(cleanInv)}`,
+      notes: paid > 0 ? `إجمالي الفاتورة ${formatPriceShort(total)} (مسدد كاش ${formatPriceShort(paid)})` : `فاتورة توريد بضاعة لحساب الأجل`,
+      debit: debitAmount,
+      credit: 0,
     });
-  }
+  });
 
-  // Add payments to statement
+  // 2. Map Payments to Statement Events
   payments.forEach(p => {
     const val = Number(p.amount || 0);
+    const payId = String(p.id).replace(/\D/g, '').slice(0, 6) || '1';
     statementEvents.push({
+      id: p.id,
       date: new Date(p.created_at || p.payment_date),
-      type: 'سند قبض / تحصيل',
-      ref: `سند #${String(p.id).replace('pay-', '').slice(0, 6)}`,
-      notes: p.notes || 'سداد دفعة نقدية تحت الحساب',
+      type: 'سند تحصيل نقدي',
+      ref: `سند تحصيل #${formatNumber(payId)}`,
+      notes: p.notes || 'سداد نقدية لحساب الأجل',
       debit: 0,
       credit: val,
     });
   });
 
+  // 3. Sort chronologically (oldest to newest) to calculate running balance accurately
   statementEvents.sort((a, b) => a.date.getTime() - b.date.getTime());
 
   let runningBalance = 0;
-  const ledgerRows = statementEvents.map(ev => {
+  const ledgerRowsWithBalance = statementEvents.map(ev => {
     runningBalance += (ev.debit - ev.credit);
     return {
       ...ev,
@@ -247,16 +251,38 @@ export default function CustomerLedgerPage() {
     };
   });
 
-  const totalPaymentsAmount = payments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
-  const baseOrderDebt = statementEvents.reduce((sum, ev) => sum + ev.debit, 0);
-  const directCustomerDebt = Number(customer.current_debt !== undefined && customer.current_debt !== null ? customer.current_debt : (customer.previous_balance || 0));
-  const finalTotalDebt = ledgerRows.length > 0 ? Math.max(0, baseOrderDebt - totalPaymentsAmount) : directCustomerDebt;
+  // 4. Reverse to show newest movements on top for preview and print
+  const displayLedgerRows = [...ledgerRowsWithBalance].reverse();
+
+  // Primary Debt: Always exact from profile.current_debt (or previous_balance)
+  const currentDebtFromProfile = Number(
+    customer.current_debt !== undefined && customer.current_debt !== null 
+      ? customer.current_debt 
+      : (customer.previous_balance || 0)
+  );
 
   return (
     <AdminLayout>
       <div className="space-y-6">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm">
+        
+        {/* Printable Header (Visible during Print only) */}
+        <div className="hidden print:block text-center border-b-2 border-slate-900 pb-4 mb-6">
+          <h1 className="text-2xl font-black text-black mb-1">{BRAND.name}</h1>
+          <p className="text-sm font-bold text-slate-700">كشف حساب عميل مفصل (Statement of Account)</p>
+          <div className="flex justify-between items-center text-xs mt-3 px-2">
+            <div>
+              <p className="font-bold">اسم العميل: <span className="font-black text-sm">{customer.store_name || customer.full_name}</span></p>
+              <p>كود العميل: #{custCodeClean} | الهاتف: {customer.phone || '---'}</p>
+            </div>
+            <div className="text-left">
+              <p>تاريخ الطباعة: {new Date().toLocaleDateString('ar-EG')}</p>
+              <p className="font-bold text-sm">المديونية الحالية المستحقة: {formatPriceShort(currentDebtFromProfile)}</p>
+            </div>
+          </div>
+        </div>
+
+        {/* Top Header Card (Screen Only) */}
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm print:hidden">
           <div className="flex items-center gap-4">
             <Link href="/admin/customers" className="p-2 bg-slate-100 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-200 text-slate-700 dark:text-slate-300">
               <ArrowRight className="w-5 h-5" />
@@ -277,14 +303,14 @@ export default function CustomerLedgerPage() {
           </div>
 
           <div className="flex items-center gap-3 w-full sm:w-auto flex-wrap">
-            <button onClick={() => setShowCreditModal(true)} className="btn-secondary flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded-xl shadow-sm">
+            <button onClick={() => setShowCreditModal(true)} className="btn-secondary flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded-xl shadow-sm cursor-pointer">
               <span>تعديل الحد الائتماني</span>
             </button>
-            <button onClick={() => setShowPaymentModal(true)} className="btn-primary flex items-center gap-2 px-5 py-2.5 text-xs font-bold rounded-xl">
+            <button onClick={() => setShowPaymentModal(true)} className="btn-primary flex items-center gap-2 px-5 py-2.5 text-xs font-bold rounded-xl cursor-pointer">
               <DollarSign className="w-4 h-4" />
               <span>تسجيل تحصيل نقدية</span>
             </button>
-            <button onClick={() => window.print()} className="btn-secondary flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded-xl">
+            <button onClick={() => window.print()} className="btn-secondary flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded-xl cursor-pointer">
               <Printer className="w-4 h-4" />
               <span>طباعة الكشف</span>
             </button>
@@ -295,12 +321,12 @@ export default function CustomerLedgerPage() {
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
           <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm">
             <span className="text-xs font-bold text-slate-500 dark:text-slate-400 block mb-1">إجمالي المديونية المتبقية المستحقة</span>
-            <span className="text-3xl font-black text-red-600 dark:text-red-400 font-mono">{formatPriceShort(finalTotalDebt)}</span>
+            <span className="text-3xl font-black text-red-600 dark:text-red-400 font-mono">{formatPriceShort(currentDebtFromProfile)}</span>
           </div>
           <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm">
             <div className="flex justify-between items-center mb-1">
-              <span className="text-xs font-bold text-slate-500 dark:text-slate-400">الحد الائتماني المسموح</span>
-              <button onClick={() => setShowCreditModal(true)} className="text-[11px] text-brand-600 dark:text-emerald-400 hover:underline font-bold">تعديل</button>
+              <span className="text-xs font-bold text-slate-500 dark:text-slate-400">الحد الائتماني المعتمد</span>
+              <button onClick={() => setShowCreditModal(true)} className="text-[11px] text-brand-600 dark:text-emerald-400 hover:underline font-bold print:hidden">تعديل</button>
             </div>
             <span className="text-3xl font-black text-slate-900 dark:text-white font-mono">{formatPriceShort(customer.credit_limit || 50000)}</span>
           </div>
@@ -315,31 +341,40 @@ export default function CustomerLedgerPage() {
         {/* Detailed Statement Table */}
         <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden">
           <div className="p-5 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 flex justify-between items-center">
-            <h2 className="text-base font-black text-slate-900 dark:text-white">كشف حساب تفصيلي (Statement of Account)</h2>
-            <span className="text-xs font-bold text-slate-500 dark:text-slate-400">عدد الحركات: {formatNumber(ledgerRows.length)}</span>
+            <h2 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
+              <FileText className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+              <span>كشف حساب تفصيلي (Statement of Account)</span>
+            </h2>
+            <span className="text-xs font-bold text-slate-500 dark:text-slate-400">عدد الحركات: {formatNumber(displayLedgerRows.length)}</span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-right text-sm">
               <thead className="bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold text-xs border-b border-slate-200 dark:border-slate-700">
                 <tr>
                   <th className="p-4 whitespace-nowrap">التاريخ</th>
-                  <th className="p-4 whitespace-nowrap">نوع الحركة / الرقم</th>
+                  <th className="p-4 whitespace-nowrap">نوع الحركة</th>
+                  <th className="p-4 whitespace-nowrap">رقم المرجع</th>
                   <th className="p-4 whitespace-nowrap">البيان والملاحظات</th>
-                  <th className="p-4 whitespace-nowrap text-red-600 dark:text-red-400">مدين (+) / فاتورة</th>
-                  <th className="p-4 whitespace-nowrap text-emerald-600 dark:text-emerald-400">دائن (-) / سداد</th>
+                  <th className="p-4 whitespace-nowrap text-red-600 dark:text-red-400">مدين (+) / مسحوبات</th>
+                  <th className="p-4 whitespace-nowrap text-emerald-600 dark:text-emerald-400">دائن (-) / سداد نقدي</th>
                   <th className="p-4 whitespace-nowrap">الرصيد المتبقي</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                {ledgerRows.length === 0 ? (
+                {displayLedgerRows.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="p-8 text-center text-slate-500 dark:text-slate-400 font-medium">لا توجد حركات مالية مسجلة لهذا العميل حتى الآن</td>
+                    <td colSpan={7} className="p-8 text-center text-slate-500 dark:text-slate-400 font-medium">لا توجد حركات مالية مسجلة لهذا العميل حتى الآن</td>
                   </tr>
                 ) : (
-                  ledgerRows.map((row, idx) => (
-                    <tr key={idx} className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors ${row.credit > 0 ? 'bg-emerald-50/30 dark:bg-emerald-950/20' : ''}`}>
+                  displayLedgerRows.map((row, idx) => (
+                    <tr key={idx} className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors ${row.credit > 0 ? 'bg-emerald-50/40 dark:bg-emerald-950/20' : ''}`}>
                       <td className="p-4 text-slate-600 dark:text-slate-400 font-mono text-xs whitespace-nowrap">
                         {row.date.toLocaleDateString('ar-EG', { year: 'numeric', month: 'short', day: 'numeric' })}
+                      </td>
+                      <td className="p-4 font-bold text-xs whitespace-nowrap">
+                        <span className={`px-2.5 py-1 rounded-lg text-xs font-bold inline-block ${row.credit > 0 ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300' : 'bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-300'}`}>
+                          {row.type}
+                        </span>
                       </td>
                       <td className="p-4 font-mono font-bold text-slate-900 dark:text-white text-xs">{row.ref}</td>
                       <td className="p-4 text-slate-800 dark:text-slate-200 text-xs font-medium">{row.notes}</td>
@@ -400,10 +435,10 @@ export default function CustomerLedgerPage() {
               </div>
 
               <div className="pt-3 flex gap-2">
-                <button type="submit" disabled={formLoading} className="flex-1 btn-primary py-2.5 rounded-xl font-bold text-xs shadow">
+                <button type="submit" disabled={formLoading} className="flex-1 btn-primary py-2.5 rounded-xl font-bold text-xs shadow cursor-pointer">
                   {formLoading ? 'جاري الحفظ...' : 'حفظ التعديلات'}
                 </button>
-                <button type="button" onClick={() => setShowCreditModal(false)} className="btn-secondary px-4 py-2.5 rounded-xl text-xs font-bold">
+                <button type="button" onClick={() => setShowCreditModal(false)} className="btn-secondary px-4 py-2.5 rounded-xl text-xs font-bold cursor-pointer">
                   إلغاء
                 </button>
               </div>
@@ -451,10 +486,10 @@ export default function CustomerLedgerPage() {
               </div>
 
               <div className="pt-3 flex gap-2">
-                <button type="submit" disabled={formLoading} className="flex-1 btn-primary py-2.5 rounded-xl font-bold text-xs shadow">
+                <button type="submit" disabled={formLoading} className="flex-1 btn-primary py-2.5 rounded-xl font-bold text-xs shadow cursor-pointer">
                   {formLoading ? 'جاري التسجيل...' : 'تأكيد السند وتحديث الرصيد'}
                 </button>
-                <button type="button" onClick={() => setShowPaymentModal(false)} className="btn-secondary px-4 py-2.5 rounded-xl text-xs font-bold">
+                <button type="button" onClick={() => setShowPaymentModal(false)} className="btn-secondary px-4 py-2.5 rounded-xl text-xs font-bold cursor-pointer">
                   إلغاء
                 </button>
               </div>

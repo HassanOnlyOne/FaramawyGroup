@@ -6,7 +6,7 @@ import { CustomerLayout } from '@/components/layout/customer-layout';
 import { ORDER_STATUS_LABELS, BRAND } from '@/lib/constants';
 import { useNumberFormat } from '@/context/number-format-context';
 import { createClient } from '@/lib/supabase/client';
-import { CreditCard, ShieldCheck, Clock, FileText, CheckCircle2, Lock, PhoneCall, ShoppingBag, RefreshCw, ChevronRight } from 'lucide-react';
+import { CreditCard, ShieldCheck, Clock, FileText, CheckCircle2, Lock, PhoneCall, ShoppingBag, RefreshCw } from 'lucide-react';
 
 export default function CreditPage() {
   const { formatPriceShort, formatNumber } = useNumberFormat();
@@ -47,7 +47,6 @@ export default function CreditPage() {
           if (!currentProfile) {
             currentProfile = apiJson.profile;
           } else if (apiJson.profile) {
-            // merge latest credit properties
             currentProfile = {
               ...currentProfile,
               ...apiJson.profile,
@@ -68,7 +67,32 @@ export default function CreditPage() {
       const customerCode = currentProfile?.customer_code ? String(currentProfile.customer_code).replace(/\D/g, '') : (currentProfile?.id ? String(currentProfile.id).slice(-4) : '1004');
       setProfile(currentProfile || { customer_code: customerCode, credit_limit: 0, full_name: 'تاجر تجزئة', is_credit_enabled: false });
 
-      // 3. Fallback direct query if orders empty
+      // 3. Direct customer_payments fetch if payments empty
+      if (payments.length === 0) {
+        let custPayQuery = supabase
+          .from('customer_payments')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(50);
+        
+        if (user?.id) {
+          custPayQuery = custPayQuery.eq('customer_id', user.id);
+        }
+
+        const { data: payList } = await custPayQuery;
+        if (payList && payList.length > 0) {
+          setPayments(payList);
+        } else {
+          const { data: oldPays } = await supabase
+            .from('payments')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .limit(50);
+          if (oldPays) setPayments(oldPays);
+        }
+      }
+
+      // 4. Direct orders fetch if orders empty
       if (orders.length === 0) {
         let query = supabase.from('orders').select('*');
         if (user?.id) {
@@ -83,15 +107,6 @@ export default function CreditPage() {
         }
       }
 
-      if (payments.length === 0) {
-        const { data: payList } = await supabase
-          .from('payments')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(20);
-        if (payList) setPayments(payList);
-      }
-
     } catch (err) {
       console.error('Error loading credit page:', err);
     } finally {
@@ -103,7 +118,7 @@ export default function CreditPage() {
     loadCreditStatement();
   }, []);
 
-  // Strict check for credit enablement: profile.is_credit_enabled
+  // Strict check for credit enablement
   const isCreditEnabled = profile 
     ? Boolean(
         profile.is_credit_enabled === true || 
@@ -121,7 +136,7 @@ export default function CreditPage() {
   const creditLimit = Number(profile?.credit_limit || 0);
   const availableCredit = Math.max(0, creditLimit - currentDebt);
 
-  // Credit orders list for the withdrawals table
+  // Credit orders list
   const safeOrders = Array.isArray(orders) ? orders : [];
   const creditWithdrawals = safeOrders.filter((o: any) => {
     const tot = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
@@ -146,7 +161,7 @@ export default function CreditPage() {
               onClick={loadCreditStatement}
               disabled={loading}
               title="تحديث البيانات"
-              className="p-2 sm:p-2.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl transition-colors shrink-0"
+              className="p-2 sm:p-2.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl transition-colors shrink-0 cursor-pointer"
             >
               <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
             </button>
@@ -159,7 +174,6 @@ export default function CreditPage() {
         {loading ? (
           <div className="h-48 bg-slate-200 dark:bg-slate-800 animate-pulse rounded-3xl"></div>
         ) : !isCreditEnabled ? (
-          /* Restricted Access State (عند تعطيل خاصية الدفع الآجل) */
           <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 sm:p-8 border border-slate-200 dark:border-slate-800 shadow-sm text-center max-w-2xl mx-auto my-6">
             <div className="w-16 h-16 sm:w-20 sm:h-20 bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 rounded-3xl flex items-center justify-center text-amber-600 dark:text-amber-400 mx-auto mb-4 sm:mb-5 shadow-sm">
               <Lock className="w-8 h-8 sm:w-10 sm:h-10" />
@@ -195,7 +209,7 @@ export default function CreditPage() {
           </div>
         ) : (
           <>
-            {/* Credit Balance Cards (Responsive 1-col on mobile, 3-col on sm+) */}
+            {/* Credit Balance Cards */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
               <div className="bg-red-50/70 dark:bg-red-950/40 p-4 sm:p-5 rounded-3xl border border-red-200 dark:border-red-900/50 text-center shadow-sm">
                 <div className="w-10 h-10 bg-red-100 dark:bg-red-900/60 rounded-2xl flex items-center justify-center text-red-600 dark:text-red-300 mx-auto mb-2">
@@ -222,7 +236,7 @@ export default function CreditPage() {
               </div>
             </div>
 
-            {/* Credit Withdrawals (Table on desktop, Responsive cards on mobile) */}
+            {/* Credit Withdrawals */}
             <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden">
               <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 flex justify-between items-center">
                 <div className="flex items-center gap-2">
@@ -236,7 +250,7 @@ export default function CreditPage() {
                 <div className="p-8 text-center text-slate-400 font-medium text-xs">لا توجد مسحوبات آجلة مسجلة حتى الآن</div>
               ) : (
                 <>
-                  {/* Mobile Card List (Visible on mobile screens) */}
+                  {/* Mobile Card List */}
                   <div className="block sm:hidden divide-y divide-slate-100 dark:divide-slate-800">
                     {creditWithdrawals.map(o => {
                       const tot = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
@@ -278,7 +292,7 @@ export default function CreditPage() {
                     })}
                   </div>
 
-                  {/* Desktop Table (Hidden on small mobile, shown on sm+) */}
+                  {/* Desktop Table */}
                   <div className="hidden sm:block overflow-x-auto">
                     <table className="w-full text-right text-xs">
                       <thead className="bg-slate-100 dark:bg-slate-800/70 text-slate-800 dark:text-slate-200 font-bold border-b border-slate-200 dark:border-slate-800">
@@ -331,7 +345,7 @@ export default function CreditPage() {
               )}
             </div>
 
-            {/* Direct Cash Payments & Receipts */}
+            {/* Direct Cash Payments & Receipts from customer_payments */}
             <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden">
               <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 bg-emerald-50/50 dark:bg-emerald-950/40 flex justify-between items-center">
                 <div className="flex items-center gap-2">
@@ -358,7 +372,7 @@ export default function CreditPage() {
                           </span>
                         </div>
                         <p className="text-xs text-slate-700 dark:text-slate-300">
-                          {p.notes || 'سداد دفعة نقدية تحت الحساب'}
+                          {p.notes || 'سداد دفعة نقدية لحساب الأجل'}
                         </p>
                         <p className="text-[10px] text-slate-400">
                           {new Date(p.created_at || p.payment_date).toLocaleDateString('ar-EG')}
@@ -391,7 +405,7 @@ export default function CreditPage() {
                               {formatPriceShort(p.amount)}
                             </td>
                             <td className="p-3.5 text-slate-700 dark:text-slate-300">
-                              {p.notes || 'سداد دفعة نقدية تحت الحساب'}
+                              {p.notes || 'سداد دفعة نقدية لحساب الأجل'}
                             </td>
                           </tr>
                         ))}

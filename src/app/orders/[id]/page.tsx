@@ -5,7 +5,23 @@ import { useParams, useRouter } from 'next/navigation';
 import { CustomerLayout } from '@/components/layout/customer-layout';
 import Link from 'next/link';
 import { useToast } from '@/components/ui/toast';
-import { Package, ArrowRight, Loader2, MapPin, Phone, StickyNote, AlertTriangle, MessageSquare, CreditCard, Banknote } from 'lucide-react';
+import { 
+  Package, 
+  ArrowRight, 
+  Loader2, 
+  MapPin, 
+  Phone, 
+  AlertTriangle, 
+  Edit3, 
+  XCircle, 
+  Plus, 
+  Minus, 
+  Trash2, 
+  Search, 
+  Check, 
+  Info,
+  ShoppingCart
+} from 'lucide-react';
 import { OrderTimeline } from '@/components/orders/order-timeline';
 import { useNumberFormat } from '@/context/number-format-context';
 
@@ -13,6 +29,7 @@ const statusMap: Record<string, { label: string; color: string }> = {
   pending: { label: 'قيد المراجعة', color: 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300' },
   modified_by_owner: { label: 'تم التعديل (في انتظار تأكيدك)', color: 'bg-purple-100 text-purple-800 dark:bg-purple-950/60 dark:text-purple-300' },
   approved: { label: 'مقبول وجاري التجهيز', color: 'bg-blue-100 text-blue-800 dark:bg-blue-950/60 dark:text-blue-300' },
+  processing: { label: 'جاري التجهيز', color: 'bg-blue-100 text-blue-800 dark:bg-blue-950/60 dark:text-blue-300' },
   delivering: { label: 'في الطريق', color: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-300' },
   out_for_delivery: { label: 'في الطريق إليك', color: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-300' },
   completed: { label: 'مكتمل ومستلم', color: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300' },
@@ -28,27 +45,181 @@ export default function OrderDetailPage() {
   const router = useRouter();
   const { formatPriceShort, formatNumber } = useNumberFormat();
 
-  useEffect(() => {
-    const fetchOrder = async () => {
-      try {
-        const res = await fetch(`/api/orders/${id}`);
-        const data = await res.json();
-        const fetchedOrder = data.data || data.order || (data.id ? data : null);
+  // Edit Order Modal States
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editableItems, setEditableItems] = useState<any[]>([]);
+  const [availableProducts, setAvailableProducts] = useState<any[]>([]);
+  const [productSearch, setProductSearch] = useState('');
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
 
-        if (res.ok && fetchedOrder) {
-          setOrder(fetchedOrder);
-        } else {
-          toast({ title: 'خطأ', description: 'الطلب غير موجود', type: 'error' });
-          router.push('/orders');
-        }
-      } catch (error) {
-        console.error('Error:', error);
-      } finally {
-        setIsLoading(false);
+  const fetchOrder = async () => {
+    try {
+      const res = await fetch(`/api/orders/${id}?t=${Date.now()}`);
+      const data = await res.json();
+      const fetchedOrder = data.data || data.order || (data.id ? data : null);
+
+      if (res.ok && fetchedOrder) {
+        setOrder(fetchedOrder);
+      } else {
+        toast({ title: 'خطأ', description: 'الطلب غير موجود', type: 'error' });
+        router.push('/orders');
       }
-    };
+    } catch (error) {
+      console.error('Error:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
     fetchOrder();
-  }, [id, router, toast]);
+  }, [id]);
+
+  // Load active products when opening edit modal
+  const handleOpenEditModal = async () => {
+    if (!order || order.status !== 'pending') return;
+
+    // Initialize editable items from current order
+    const initialItems = (order.order_items || []).map((item: any) => ({
+      id: item.product_id || item.id,
+      product_id: item.product_id || item.product?.id || item.id,
+      name: item.product?.name || item.product_name || 'صنف غذائي',
+      wholesale_unit: item.product?.wholesale_unit || item.product?.unit || item.wholesale_unit || 'عبوة',
+      unit_price: Number(item.unit_price || item.price || 0),
+      quantity: Number(item.quantity || 1),
+      min_order_quantity: item.product?.min_order_quantity || 1
+    }));
+    setEditableItems(initialItems);
+    setShowEditModal(true);
+
+    try {
+      const prodRes = await fetch(`/api/products?limit=200&t=${Date.now()}`);
+      if (prodRes.ok) {
+        const prodData = await prodRes.json();
+        const prods = prodData.products || prodData.data || [];
+        setAvailableProducts(prods.filter((p: any) => p.is_active !== false));
+      }
+    } catch (e) {
+      console.error('Error fetching products:', e);
+    }
+  };
+
+  const handleQuantityChange = (productId: string, delta: number) => {
+    setEditableItems(prev => prev.map(item => {
+      if (item.product_id === productId || item.id === productId) {
+        const minQty = item.min_order_quantity || 1;
+        const newQty = Math.max(minQty, item.quantity + delta);
+        return { ...item, quantity: newQty };
+      }
+      return item;
+    }));
+  };
+
+  const handleRemoveItem = (productId: string) => {
+    if (editableItems.length <= 1) {
+      toast({ title: 'تنبيه', description: 'يجب أن تحتوي الفاتورة على صنف واحد على الأقل', type: 'error' });
+      return;
+    }
+    setEditableItems(prev => prev.filter(item => (item.product_id || item.id) !== productId));
+  };
+
+  const handleAddProduct = (prod: any) => {
+    const existing = editableItems.find(item => (item.product_id || item.id) === prod.id);
+    if (existing) {
+      handleQuantityChange(prod.id, 1);
+      toast({ title: 'تمت زيادة الكمية', description: `تمت زيادة كمية ${prod.name}`, type: 'success' });
+    } else {
+      const newItem = {
+        id: prod.id,
+        product_id: prod.id,
+        name: prod.name,
+        wholesale_unit: prod.wholesale_unit || prod.unit || 'عبوة',
+        unit_price: Number(prod.base_price || prod.price || 0),
+        quantity: Number(prod.min_order_quantity || 1),
+        min_order_quantity: Number(prod.min_order_quantity || 1)
+      };
+      setEditableItems(prev => [...prev, newItem]);
+      toast({ title: 'تمت إضافة الصنف', description: `تمت إضافة ${prod.name} إلى الفاتورة`, type: 'success' });
+    }
+    setProductSearch('');
+  };
+
+  const handleSaveOrderEdit = async () => {
+    if (editableItems.length === 0) {
+      toast({ title: 'تنبيه', description: 'الطلب يجب أن يحتوي على أصناف', type: 'error' });
+      return;
+    }
+
+    setIsSavingEdit(true);
+    try {
+      const subtotal = editableItems.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
+      const deliveryFee = Number(order.delivery_fee || order.shipping_fee || 0);
+      const discount = Number(order.discount || 0);
+      const totalAmount = Math.max(0, subtotal + deliveryFee - discount);
+
+      const payload = {
+        items: editableItems.map(item => ({
+          product_id: item.product_id || item.id,
+          product_name: item.name,
+          quantity: item.quantity,
+          unit_price: item.unit_price,
+          total_price: item.quantity * item.unit_price
+        })),
+        subtotal,
+        total: totalAmount,
+        total_amount: totalAmount,
+        status: 'pending'
+      };
+
+      const res = await fetch(`/api/orders/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      const resData = await res.json().catch(() => ({}));
+
+      if (res.ok && resData.success !== false) {
+        toast({ title: 'تم تعديل الطلب بنجاح', description: 'تم تحديث أصناف الفاتورة والإجمالي الجديد', type: 'success' });
+        setShowEditModal(false);
+        await fetchOrder();
+      } else {
+        toast({ title: 'خطأ في التعديل', description: resData.error || 'فشل حفظ التعديلات', type: 'error' });
+      }
+    } catch (err: any) {
+      toast({ title: 'خطأ في الاتصال بالسيرفر', description: err.message, type: 'error' });
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
+  const handleCancelOrder = async () => {
+    const confirmed = window.confirm('هل أنت متأكد من رغبتك في إلغاء هذا الطلب؟');
+    if (!confirmed) return;
+
+    setIsCancelling(true);
+    try {
+      const res = await fetch(`/api/orders/${id}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'cancelled' })
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data.success !== false) {
+        toast({ title: 'تم إلغاء الطلب', description: 'تم تحويل حالة الطلب إلى ملغي بنجاح', type: 'success' });
+        await fetchOrder();
+      } else {
+        toast({ title: 'خطأ', description: data.error || 'فشل إلغاء الطلب', type: 'error' });
+      }
+    } catch (err: any) {
+      toast({ title: 'خطأ في الاتصال', description: err.message, type: 'error' });
+    } finally {
+      setIsCancelling(false);
+    }
+  };
 
   if (isLoading) {
     return (
@@ -62,12 +233,25 @@ export default function OrderDetailPage() {
 
   if (!order) return null;
 
+  const isPending = order.status === 'pending';
   const statusInfo = statusMap[order.status] || { label: order.status, color: 'bg-slate-100 text-slate-700' };
   const invNo = order.invoice_no || order.order_number || String(order.id).slice(0, 8);
   const invClean = String(invNo).replace(/\D/g, '') || invNo;
   const totalVal = Number(order.total !== undefined ? order.total : (order.total_amount || 0));
   const paidVal = Number(order.paid_amount || 0);
   const remVal = Number(order.remaining_amount !== undefined ? order.remaining_amount : Math.max(0, totalVal - paidVal));
+
+  const editModalSubtotal = editableItems.reduce((sum, item) => sum + (item.quantity * item.unit_price), 0);
+
+  const filteredProductsToAdd = availableProducts.filter(p => {
+    if (!productSearch.trim()) return false;
+    const term = productSearch.toLowerCase();
+    return (
+      (p.name || '').toLowerCase().includes(term) ||
+      (p.sku_code || '').includes(term) ||
+      (p.sku || '').toLowerCase().includes(term)
+    );
+  });
 
   return (
     <CustomerLayout>
@@ -86,6 +270,46 @@ export default function OrderDetailPage() {
                 لقد قمنا بتحديث بنود الفاتورة أو الأسعار. يرجى مراجعة التفاصيل أدناه.
               </p>
             </div>
+          </div>
+        )}
+
+        {/* Customer Self-Edit / Cancel Action Bar for Pending Orders */}
+        {isPending ? (
+          <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 p-4 sm:p-5 rounded-3xl shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-amber-100 dark:bg-amber-900/60 flex items-center justify-center text-amber-700 dark:text-amber-300 shrink-0">
+                <Edit3 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm sm:text-base font-bold text-amber-950 dark:text-amber-200">الطلب قيد المراجعة ويمكنك تعديله</h3>
+                <p className="text-xs text-amber-700 dark:text-amber-300 mt-0.5">
+                  يمكنك تعديل الكميات، إضافة أو حذف أصناف، أو إلغاء الطلب قبل اعتماده من الإدارة
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+              <button
+                onClick={handleOpenEditModal}
+                className="flex-1 sm:flex-none btn-primary flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs cursor-pointer shadow-sm"
+              >
+                <Edit3 className="w-4 h-4" />
+                <span>تعديل الطلب</span>
+              </button>
+              <button
+                onClick={handleCancelOrder}
+                disabled={isCancelling}
+                className="btn-secondary text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 border-red-200 dark:border-red-900/40 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-bold text-xs cursor-pointer"
+              >
+                <XCircle className="w-4 h-4" />
+                <span>{isCancelling ? 'جاري الإلغاء...' : 'إلغاء الطلب'}</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="bg-slate-50 dark:bg-slate-850 border border-slate-200 dark:border-slate-800 p-3 sm:p-4 rounded-2xl flex items-center gap-2.5 text-xs text-slate-600 dark:text-slate-300">
+            <Info className="w-4 h-4 text-slate-400 shrink-0" />
+            <span>لا يمكن تعديل الطلب أو إلغاؤه بعد اعتماده أو تجهيزه للتوصيل.</span>
           </div>
         )}
 
@@ -115,7 +339,18 @@ export default function OrderDetailPage() {
 
             {/* Order Items */}
             <div className="bg-white dark:bg-slate-900 rounded-3xl p-4 sm:p-6 border border-slate-200 dark:border-slate-800 shadow-sm">
-              <h2 className="text-sm sm:text-base font-black text-slate-900 dark:text-white mb-3">أصناف الفاتورة</h2>
+              <div className="flex justify-between items-center mb-3">
+                <h2 className="text-sm sm:text-base font-black text-slate-900 dark:text-white">أصناف الفاتورة</h2>
+                {isPending && (
+                  <button
+                    onClick={handleOpenEditModal}
+                    className="text-xs font-bold text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1 cursor-pointer"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>تعديل الأصناف</span>
+                  </button>
+                )}
+              </div>
               <div className="divide-y divide-slate-100 dark:divide-slate-800">
                 {order.order_items?.map((item: any, idx: number) => {
                   const prod = item.product || {};
@@ -187,6 +422,175 @@ export default function OrderDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* Customer Edit Order Modal */}
+      {showEditModal && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-3 sm:p-4 backdrop-blur-sm" dir="rtl">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden border border-slate-200 dark:border-slate-800">
+            {/* Modal Header */}
+            <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-slate-50 dark:bg-slate-850">
+              <div className="flex items-center gap-2">
+                <ShoppingCart className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                <h3 className="font-black text-base sm:text-lg text-slate-900 dark:text-white">
+                  تعديل أصناف الطلب #{formatNumber(invClean)}
+                </h3>
+              </div>
+              <button 
+                onClick={() => setShowEditModal(false)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-2xl font-bold p-1 cursor-pointer"
+              >
+                &times;
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-4 sm:p-6 overflow-y-auto space-y-5 flex-1 scrollbar-thin">
+              
+              {/* Product Search & Add Section */}
+              <div className="relative">
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                  إضافة منتج جديد للطلب:
+                </label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="ابحث بالاسم أو كود الصنف لإضافته..."
+                    value={productSearch}
+                    onChange={e => setProductSearch(e.target.value)}
+                    className="w-full pl-4 pr-10 py-2.5 border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 rounded-xl text-xs font-bold text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
+                  />
+                  <Search className="w-4 h-4 text-slate-400 absolute right-3.5 top-3.5" />
+                </div>
+
+                {productSearch.trim() && (
+                  <div className="absolute z-20 top-full left-0 right-0 mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl max-h-48 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-700">
+                    {filteredProductsToAdd.length === 0 ? (
+                      <div className="p-3 text-xs text-slate-400 text-center">لا توجد منتجات مطابقة للبحث</div>
+                    ) : (
+                      filteredProductsToAdd.map(prod => (
+                        <div
+                          key={prod.id}
+                          onClick={() => handleAddProduct(prod)}
+                          className="p-3 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 cursor-pointer transition-colors flex justify-between items-center"
+                        >
+                          <div>
+                            <span className="font-bold text-xs text-slate-900 dark:text-white block">{prod.name}</span>
+                            <span className="text-[11px] text-slate-400">الوحدة: {prod.wholesale_unit || prod.unit || 'عبوة'}</span>
+                          </div>
+                          <div className="text-left flex items-center gap-2">
+                            <span className="font-mono font-bold text-xs text-emerald-600 dark:text-emerald-400">
+                              {formatPriceShort(prod.base_price || prod.price || 0)}
+                            </span>
+                            <span className="px-2 py-1 bg-emerald-600 text-white text-[10px] font-bold rounded-lg flex items-center gap-0.5">
+                              <Plus className="w-3 h-3" /> إضافة
+                            </span>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Items List */}
+              <div className="space-y-3">
+                <h4 className="text-xs font-black text-slate-800 dark:text-slate-200">الأصناف الحالية في الطلب ({editableItems.length})</h4>
+                <div className="space-y-2.5">
+                  {editableItems.map(item => (
+                    <div 
+                      key={item.product_id || item.id}
+                      className="p-3 bg-slate-50 dark:bg-slate-850 rounded-2xl border border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3 flex-wrap sm:flex-nowrap"
+                    >
+                      <div className="flex-1 min-w-[150px]">
+                        <span className="font-bold text-xs sm:text-sm text-slate-900 dark:text-white block">{item.name}</span>
+                        <span className="text-[11px] text-slate-400">
+                          سعر {item.wholesale_unit}: {formatPriceShort(item.unit_price)}
+                        </span>
+                      </div>
+
+                      {/* Quantity Controls */}
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleQuantityChange(item.product_id || item.id, -1)}
+                          disabled={item.quantity <= (item.min_order_quantity || 1)}
+                          className="w-7 h-7 rounded-lg bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 flex items-center justify-center text-slate-700 dark:text-slate-300 hover:bg-slate-100 disabled:opacity-40 cursor-pointer"
+                        >
+                          <Minus className="w-3.5 h-3.5" />
+                        </button>
+                        <span className="w-8 text-center font-mono font-bold text-xs text-slate-900 dark:text-white">
+                          {formatNumber(item.quantity)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleQuantityChange(item.product_id || item.id, 1)}
+                          className="w-7 h-7 rounded-lg bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 flex items-center justify-center text-slate-700 dark:text-slate-300 hover:bg-slate-100 cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      {/* Total Item Price */}
+                      <div className="text-left font-mono font-bold text-xs sm:text-sm text-slate-900 dark:text-white min-w-[70px]">
+                        {formatPriceShort(item.quantity * item.unit_price)}
+                      </div>
+
+                      {/* Delete Button */}
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveItem(item.product_id || item.id)}
+                        className="p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
+                        title="حذف الصنف"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Total Calculation Summary */}
+              <div className="p-4 bg-emerald-50/60 dark:bg-emerald-950/30 rounded-2xl border border-emerald-200 dark:border-emerald-900/50 flex justify-between items-center">
+                <span className="font-bold text-xs sm:text-sm text-emerald-950 dark:text-emerald-200">
+                  إجمالي الطلب المعدل:
+                </span>
+                <span className="text-lg sm:text-xl font-black text-emerald-700 dark:text-emerald-400 font-mono">
+                  {formatPriceShort(editModalSubtotal)}
+                </span>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 sm:p-5 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-850 flex gap-2">
+              <button
+                type="button"
+                disabled={isSavingEdit || editableItems.length === 0}
+                onClick={handleSaveOrderEdit}
+                className="flex-1 btn-primary py-3 rounded-xl font-bold text-xs shadow-sm flex items-center justify-center gap-2 cursor-pointer"
+              >
+                {isSavingEdit ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>جاري حفظ التعديلات...</span>
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-4 h-4" />
+                    <span>حفظ التعديلات وتحديث الطلب</span>
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowEditModal(false)}
+                className="btn-secondary px-5 py-3 rounded-xl text-xs font-bold cursor-pointer"
+              >
+                إلغاء
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </CustomerLayout>
   );
 }
