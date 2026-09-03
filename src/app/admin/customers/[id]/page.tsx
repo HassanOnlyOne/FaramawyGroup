@@ -65,8 +65,7 @@ export default function CustomerLedgerPage() {
       const matchedOrders = allOrders.filter((o: any) => 
         (o.customer_id && o.customer_id === id) ||
         (o.customer?.id && o.customer?.id === id) ||
-        (custCode && (o.customer_code === custCode || o.store_code === custCode)) ||
-        (custCode === '1004' && (o.customer_code === '1000' || o.customer_code === '1004' || o.store_name_ref?.includes('عمر')))
+        (custCode && (o.customer_code === custCode || o.store_code === custCode))
       );
 
       setOrders(matchedOrders);
@@ -77,8 +76,7 @@ export default function CustomerLedgerPage() {
         const matchedPayments = allPayments.filter((p: any) => 
           (p.customer_id && p.customer_id === id) ||
           (p.customer?.id && p.customer?.id === id) ||
-          (custCode && (String(p.customer_code || '').includes(custCode) || String(p.customer?.customer_code || '').includes(custCode))) ||
-          (custCode === '1004' && (String(p.customer_code || '').includes('1004') || String(p.customer_code || '').includes('1000')))
+          (custCode && (String(p.customer_code || '').includes(custCode) || String(p.customer?.customer_code || '').includes(custCode)))
         );
         setPayments(matchedPayments);
       }
@@ -139,18 +137,6 @@ export default function CustomerLedgerPage() {
       });
       
       if (res.ok) {
-        const newPayObj = {
-          id: crypto.randomUUID(),
-          customer_id: id,
-          customer_code: custCode,
-          amount: amountVal,
-          payment_method: 'cash',
-          payment_date: new Date().toISOString(),
-          created_at: new Date().toISOString(),
-          notes: notesVal
-        };
-
-        setPayments(prev => [newPayObj, ...prev]);
         toast({ title: 'تم تسجيل تحصيل النقدية وتحديث المديونية بنجاح', type: 'success' });
         setShowPaymentModal(false);
         await fetchCustomerData();
@@ -189,19 +175,19 @@ export default function CustomerLedgerPage() {
 
   const custCodeClean = customer.customer_code ? String(customer.customer_code).replace(/\D/g, '') : (customer.id ? String(customer.id).slice(-4) : '1004');
 
-  // 1. Map Orders to Statement Events (Excluding pending, cancelled, returned, and pure cash orders)
+  // Unified Single Source of Truth: Read debt directly from customer profile database field!
+  const finalUnifiedDebt = Number(customer.current_debt !== undefined && customer.current_debt !== null ? customer.current_debt : (customer.previous_balance || 0));
+
+  // Build Statement Events
   const statementEvents: any[] = [];
 
   orders.forEach(o => {
-    // Strictly exclude pending, cancelled, and returned orders from official statement
     if (o.status === 'pending' || o.status === 'cancelled' || o.status === 'returned') return;
-    
     const isCredit = o.payment_method === 'credit';
     const total = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
     const paid = Number(o.paid_amount || 0);
     const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, total - paid) : 0));
     
-    // Strict Cash Exclusion: pure cash orders with remaining_amount === 0 are excluded from debt statement!
     if (!isCredit && rem <= 0) return;
 
     const invNo = o.invoice_no || o.order_number || String(o.id).slice(0, 8);
@@ -209,7 +195,6 @@ export default function CustomerLedgerPage() {
     const debitAmount = rem > 0 ? rem : total;
 
     statementEvents.push({
-      id: o.id,
       date: new Date(o.created_at),
       type: 'فاتورة توريد (آجل)',
       ref: `فاتورة #${formatNumber(cleanInv)}`,
@@ -219,12 +204,10 @@ export default function CustomerLedgerPage() {
     });
   });
 
-  // 2. Map Payments to Statement Events
   payments.forEach(p => {
     const val = Number(p.amount || 0);
     const payId = String(p.id).replace(/\D/g, '').slice(0, 6) || '1';
     statementEvents.push({
-      id: p.id,
       date: new Date(p.created_at || p.payment_date),
       type: 'سند تحصيل نقدي',
       ref: `سند تحصيل #${formatNumber(payId)}`,
@@ -234,30 +217,8 @@ export default function CustomerLedgerPage() {
     });
   });
 
-  // 3. Sort chronologically (oldest to newest) to calculate running balance accurately
-  statementEvents.sort((a, b) => a.date.getTime() - b.date.getTime());
-
-  let runningBalance = 0;
-  const ledgerRowsWithBalance = statementEvents.map(ev => {
-    runningBalance += (ev.debit - ev.credit);
-    return {
-      ...ev,
-      runningBalance: Math.max(0, runningBalance)
-    };
-  });
-
-  // Final balance from the last chronological event in the cumulative ledger
-  const latestLedgerBalance = ledgerRowsWithBalance.length > 0 
-    ? ledgerRowsWithBalance[ledgerRowsWithBalance.length - 1].runningBalance 
-    : 0;
-
-  // 4. Reverse to show newest movements on top for preview and print
-  const displayLedgerRows = [...ledgerRowsWithBalance].reverse();
-
-  // Top Card Debt: Strictly equals profile.current_debt or latest ledger running balance
-  const finalUnifiedDebt = statementEvents.length > 0 
-    ? latestLedgerBalance 
-    : Number(customer.current_debt !== undefined && customer.current_debt !== null ? customer.current_debt : 0);
+  // Sort chronological for display order
+  statementEvents.sort((a, b) => b.date.getTime() - a.date.getTime());
 
   const creditLimit = Number(customer.credit_limit || 0);
   const availableCredit = Math.max(0, creditLimit - finalUnifiedDebt);
@@ -266,22 +227,6 @@ export default function CustomerLedgerPage() {
     <AdminLayout>
       <div className="space-y-6">
         
-        {/* Printable Header (Visible during Print only) */}
-        <div className="hidden print:block text-center border-b-2 border-slate-900 pb-4 mb-6">
-          <h1 className="text-2xl font-black text-black mb-1">{BRAND.name}</h1>
-          <p className="text-sm font-bold text-slate-700">كشف حساب عميل مفصل (Statement of Account)</p>
-          <div className="flex justify-between items-center text-xs mt-3 px-2">
-            <div>
-              <p className="font-bold">اسم العميل: <span className="font-black text-sm">{customer.store_name || customer.full_name}</span></p>
-              <p>كود العميل: #{custCodeClean} | الهاتف: {customer.phone || '---'}</p>
-            </div>
-            <div className="text-left">
-              <p>تاريخ الطباعة: {new Date().toLocaleDateString('ar-EG')}</p>
-              <p className="font-bold text-sm">المديونية الحالية المستحقة: {formatPriceShort(finalUnifiedDebt)}</p>
-            </div>
-          </div>
-        </div>
-
         {/* Top Header Card (Screen Only) */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm print:hidden">
           <div className="flex items-center gap-4">
@@ -344,7 +289,7 @@ export default function CustomerLedgerPage() {
               <FileText className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
               <span>كشف حساب تفصيلي للمسحوبات الآجلة والتحصيلات</span>
             </h2>
-            <span className="text-xs font-bold text-slate-500 dark:text-slate-400">عدد الحركات: {formatNumber(displayLedgerRows.length)}</span>
+            <span className="text-xs font-bold text-slate-500 dark:text-slate-400">عدد الحركات: {formatNumber(statementEvents.length)}</span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-right text-sm">
@@ -356,16 +301,15 @@ export default function CustomerLedgerPage() {
                   <th className="p-4 whitespace-nowrap">البيان والملاحظات</th>
                   <th className="p-4 whitespace-nowrap text-red-600 dark:text-red-400">مدين (+) / مسحوبات آجل</th>
                   <th className="p-4 whitespace-nowrap text-emerald-600 dark:text-emerald-400">دائن (-) / سداد نقدي</th>
-                  <th className="p-4 whitespace-nowrap">الرصيد المتبقي</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                {displayLedgerRows.length === 0 ? (
+                {statementEvents.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="p-8 text-center text-slate-500 dark:text-slate-400 font-medium">لا توجد مسحوبات آجلة أو سندات تحصيل مسجلة لهذا العميل حتى الآن</td>
+                    <td colSpan={6} className="p-8 text-center text-slate-500 dark:text-slate-400 font-medium">لا توجد مسحوبات آجلة أو سندات تحصيل مسجلة لهذا العميل حتى الآن</td>
                   </tr>
                 ) : (
-                  displayLedgerRows.map((row, idx) => (
+                  statementEvents.map((row, idx) => (
                     <tr key={idx} className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors ${row.credit > 0 ? 'bg-emerald-50/40 dark:bg-emerald-950/20' : ''}`}>
                       <td className="p-4 text-slate-600 dark:text-slate-400 font-mono text-xs whitespace-nowrap">
                         {row.date.toLocaleDateString('ar-EG', { year: 'numeric', month: 'short', day: 'numeric' })}
@@ -382,9 +326,6 @@ export default function CustomerLedgerPage() {
                       </td>
                       <td className="p-4 font-bold text-emerald-600 dark:text-emerald-400 font-mono">
                         {row.credit > 0 ? `-${formatPriceShort(row.credit)}` : '—'}
-                      </td>
-                      <td className="p-4 font-black text-slate-900 dark:text-white font-mono text-base">
-                        {formatPriceShort(row.runningBalance)}
                       </td>
                     </tr>
                   ))
