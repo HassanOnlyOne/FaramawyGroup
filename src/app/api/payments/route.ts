@@ -60,7 +60,7 @@ export async function POST(request: NextRequest) {
 
     const payAmount = Number(amount);
 
-    // 1. Get exact customer profile
+    // 1. تحديد بيانات العميل المستهدف
     let customer: any = null;
     if (customer_id) {
       const { data: c } = await adminClient.from('profiles').select('*').eq('id', customer_id).maybeSingle();
@@ -82,40 +82,53 @@ export async function POST(request: NextRequest) {
     const custCode = customer.customer_code ? String(customer.customer_code).replace(/\D/g, '') : '1000';
     const nowIso = new Date().toISOString();
 
-    // 2. Build payment record
+    // 2. تجهيز سجل السند
     const paymentRecord = {
       id: crypto.randomUUID(),
       customer_id: custId,
       customer_code: custCode,
       amount: payAmount,
       payment_method: payment_method || 'cash',
-      notes: notes || `سداد نقدي لحساب الأجل`,
+      notes: notes || 'سداد نقدي لحساب الأجل',
       payment_date: nowIso,
       created_at: nowIso
     };
 
-    // 3. Insert payment safely
+    // 3. حفظ السند في جدول customer_payments
     const { error: insertError } = await adminClient.from('customer_payments').insert([paymentRecord]);
     if (insertError) {
       throw new Error('فشل حفظ السند: ' + insertError.message);
     }
 
-    // 4. Calculate exact debt strictly from current profile record
-    const currentDebt = Number(customer.current_debt !== undefined && customer.current_debt !== null ? customer.current_debt : (customer.previous_balance || 2600));
-    const updatedDebt = Math.max(0, currentDebt - payAmount);
+    // 4. الحساب الديناميكي الموحد للمديونية من واقع الحركات لتجنب التضارب
+    const [{ data: clientOrders }, { data: clientPayments }] = await Promise.all([
+      adminClient.from('orders').select('total, total_amount, paid_amount, remaining_amount, payment_method, status').eq('customer_id', custId),
+      adminClient.from('customer_payments').select('amount').eq('customer_id', custId)
+    ]);
 
-    // 5. Update profiles table definitively across all debt fields to unify views
+    const totalDebit = (clientOrders || []).reduce((acc: number, o: any) => {
+      if (['pending', 'cancelled', 'returned'].includes(o.status)) return acc;
+      const isCredit = o.payment_method === 'credit';
+      const tot = Number(o.total ?? o.total_amount ?? 0);
+      const paid = Number(o.paid_amount || 0);
+      const rem = Number(o.remaining_amount ?? (isCredit ? Math.max(0, tot - paid) : 0));
+      return acc + (rem > 0 ? rem : (isCredit ? tot : 0));
+    }, 0);
+
+    const totalCredit = (clientPayments || []).reduce((acc: number, p: any) => acc + Number(p.amount || 0), 0);
+    const updatedDebt = Math.max(0, totalDebit - totalCredit);
+
+    // 5. تحديث جدول profiles بالأعمدة الموجودة فعلياً فقط دون debt_balance
     const { error: updateError } = await adminClient.from('profiles').update({
       current_debt: updatedDebt,
-      previous_balance: updatedDebt,
-      debt_balance: updatedDebt
+      previous_balance: updatedDebt
     }).eq('id', custId);
 
     if (updateError) {
       throw new Error('فشل تحديث رصيد العميل: ' + updateError.message);
     }
 
-    // 6. Audit log
+    // 6. تسجيل العملية في سجل التدقيق
     let currentAdminUser: any = null;
     let currentAdminProfile: any = null;
     try {
