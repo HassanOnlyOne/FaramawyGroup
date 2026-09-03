@@ -37,7 +37,6 @@ async function getNextPurchaseInvoiceNumber(adminClient: any): Promise<string> {
 async function recalculateSupplierBalance(adminClient: any, supplierId: string) {
   if (!supplierId) return;
 
-  // 1. جلب بيانات المورد لمعرفة الرصيد الافتتاحي
   const { data: supplier } = await adminClient
     .from('suppliers')
     .select('*')
@@ -50,7 +49,6 @@ async function recalculateSupplierBalance(adminClient: any, supplierId: string) 
     supplier.opening_balance ?? supplier.initial_balance ?? supplier.previous_balance ?? 0
   );
 
-  // 2. جلب جميع فواتير المشتريات التابعة لهذا المورد
   const { data: supPurchases } = await adminClient
     .from('purchases')
     .select('total, total_amount, paid_amount, remaining_amount')
@@ -63,7 +61,6 @@ async function recalculateSupplierBalance(adminClient: any, supplierId: string) 
     return sum + r;
   }, 0);
 
-  // 3. جلب مدفوعات الموردين إن وُجد جدول لسداد الموردين
   let totalSupplierPayments = 0;
   try {
     const { data: supPayments } = await adminClient
@@ -75,7 +72,6 @@ async function recalculateSupplierBalance(adminClient: any, supplierId: string) 
     }
   } catch {}
 
-  // 4. الرصيد التراكمي الصحيح
   const finalBalance = Math.max(0, (openingBalance + purchasesRemaining) - totalSupplierPayments);
 
   await adminClient
@@ -186,8 +182,6 @@ export async function POST(req: NextRequest) {
     purchaseError = res1.error;
 
     if (purchaseError || !purchaseData) {
-      console.warn('Purchase attempt 1 failed, trying fallback columns...', purchaseError?.message);
-      
       const payloadFallback: any = {
         supplier_id: supplier_id || null,
         invoice_no: invoiceNum,
@@ -209,11 +203,9 @@ export async function POST(req: NextRequest) {
     }
 
     if (purchaseError && !purchaseData) {
-      console.error('Purchase insert error:', purchaseError);
       return NextResponse.json({ success: false, error: purchaseError.message || 'فشل حفظ فاتورة المشتريات' }, { status: 400 });
     }
 
-    // زيادة كميات المخزون في جدول المنتجات
     if (Array.isArray(items) && items.length > 0) {
       for (const item of items) {
         const prodId = item.product_id || item.id;
@@ -229,7 +221,6 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // إعادة حساب رصيد المورد التراكمي (أول المدة + فواتير المشتريات)
     if (supplier_id) {
       await recalculateSupplierBalance(adminClient, supplier_id);
     }
@@ -265,9 +256,9 @@ export async function PUT(req: NextRequest) {
 
     const body = await req.json();
     const { 
-      id,
+      id, 
       supplier_id, 
-      supplier_name,
+      supplier_name, 
       invoice_number, 
       invoice_no, 
       total_amount, 
@@ -339,6 +330,7 @@ export async function PUT(req: NextRequest) {
       }
     }
 
+    // إزالة updated_at نهائياً لتفادي رفض قاعدة البيانات
     const updatePayloadAll: any = {
       supplier_id: supplier_id !== undefined ? (supplier_id || null) : existingPurchase.supplier_id,
       invoice_no: invNum,
@@ -348,8 +340,7 @@ export async function PUT(req: NextRequest) {
       paid_amount: paidVal,
       remaining_amount: remVal,
       items: Array.isArray(items) ? items : existingPurchase.items,
-      notes: notes !== undefined ? notes : existingPurchase.notes,
-      updated_at: new Date().toISOString()
+      notes: notes !== undefined ? notes : existingPurchase.notes
     };
 
     let { data: updatedData, error: updateError } = await adminClient
@@ -365,8 +356,7 @@ export async function PUT(req: NextRequest) {
         invoice_no: invNum,
         total: totalVal,
         paid_amount: paidVal,
-        notes: notes !== undefined ? notes : existingPurchase.notes,
-        updated_at: new Date().toISOString()
+        notes: notes !== undefined ? notes : existingPurchase.notes
       };
 
       const resFb = await adminClient
@@ -384,7 +374,6 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ success: false, error: updateError.message }, { status: 400 });
     }
 
-    // إعادة ضبط رصيد المورد التراكمي
     const effectiveSupId = supplier_id || existingPurchase.supplier_id;
     if (effectiveSupId) {
       await recalculateSupplierBalance(adminClient, effectiveSupId);
@@ -454,7 +443,6 @@ export async function DELETE(req: NextRequest) {
       await supabase.from('purchases').delete().eq('id', purchaseId);
     }
 
-    // إعادة ضبط رصيد المورد بعد الحذف
     if (purchase.supplier_id) {
       await recalculateSupplierBalance(adminClient, purchase.supplier_id);
     }
