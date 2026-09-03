@@ -8,16 +8,11 @@ import {
   Truck, 
   Plus, 
   Search, 
-  Building, 
-  Phone, 
   Loader2, 
   Edit, 
   Trash2, 
   DollarSign, 
   FileText,
-  Calendar,
-  ArrowDownLeft,
-  ArrowUpRight,
   Printer,
   X
 } from 'lucide-react';
@@ -223,7 +218,7 @@ export default function SuppliersPage() {
 
   const handleRecordSupplierPayment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!paymentSupplier || !paymentAmount || Number(paymentAmount) <= 0) {
+    if (!paymentSupplier || !paymentAmount || Number(paymentAmount) <= 0 || formLoading) {
       toast({ title: 'تنبيه', description: 'يرجى إدخال مبلغ صحيح للدفعة', type: 'error' });
       return;
     }
@@ -242,7 +237,7 @@ export default function SuppliersPage() {
       });
 
       if (res.ok) {
-        toast({ title: 'تم تسجيل سداد الدفعة وخصمها من رصيد المورد والخزينة بنجاح', type: 'success' });
+        toast({ title: 'تم تسجيل سداد الدفعة وحفظ السند بنجاح', type: 'success' });
         const targetSupplier = paymentSupplier;
         setPaymentSupplier(null);
         setPaymentAmount('');
@@ -270,15 +265,27 @@ export default function SuppliersPage() {
 
   const totalSupplierDebt = safeSuppliers.reduce((sum, s) => sum + Number(s.current_balance || s.balance || s.current_debt || 0), 0);
 
-  // Statement calculations
+  // كشف الحساب
+  const openingBal = Number(statementSupplier?.opening_balance ?? statementSupplier?.initial_balance ?? 0);
   const statementPurchasesTotal = statementPurchases.reduce((sum, p) => sum + Number(p.total || p.total_amount || 0), 0);
   const statementPurchasesPaid = statementPurchases.reduce((sum, p) => sum + Number(p.paid_amount || 0), 0);
   const statementDirectPayments = statementPayments.reduce((sum, p) => sum + Number(p.amount || 0), 0);
   const statementTotalPaid = statementPurchasesPaid + statementDirectPayments;
   const statementCurrentBalance = Number(statementSupplier?.current_balance !== undefined && statementSupplier?.current_balance !== null ? statementSupplier.current_balance : (statementSupplier?.balance || 0));
 
-  // Combined statement chronological timeline
   const combinedStatement: any[] = [];
+
+  if (openingBal > 0) {
+    combinedStatement.push({
+      id: `open-${statementSupplier?.id}`,
+      date: statementSupplier?.created_at || new Date().toISOString(),
+      type: 'رصيد افتتاحي (أول المدة)',
+      ref: 'رصيد سابق',
+      inflowCredit: openingBal,
+      outflowDebit: 0,
+      notes: 'رصيد مستحق أول المدة عند تسجيل المورد'
+    });
+  }
 
   statementPurchases.forEach(p => {
     combinedStatement.push({
@@ -286,8 +293,8 @@ export default function SuppliersPage() {
       date: p.created_at,
       type: 'فاتورة توريد',
       ref: p.invoice_no || p.invoice_number || `فاتورة #${String(p.id).slice(0, 6)}`,
-      inflowCredit: Number(p.total || p.total_amount || 0), // مستحق للمورد (+)
-      outflowDebit: Number(p.paid_amount || 0), // مسدد منه فورياً (-)
+      inflowCredit: Number(p.total || p.total_amount || 0),
+      outflowDebit: Number(p.paid_amount || 0),
       notes: p.notes || `فاتورة توريد بضائع (${p.items?.length || 1} أصناف)`
     });
   });
@@ -299,7 +306,7 @@ export default function SuppliersPage() {
       type: 'سداد دفعة نقدية',
       ref: `سند #${String(pay.id).slice(0, 8)}`,
       inflowCredit: 0,
-      outflowDebit: Number(pay.amount || 0), // مسدد للمورد (-)
+      outflowDebit: Number(pay.amount || 0),
       notes: pay.notes || 'سداد نقدي لحساب المورد'
     });
   });
@@ -308,7 +315,7 @@ export default function SuppliersPage() {
 
   return (
     <AdminLayout>
-      <div className="space-y-6">
+      <div className="space-y-6 print:hidden">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
           <div>
             <h1 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white">دليل الموردين والشركات</h1>
@@ -390,7 +397,6 @@ export default function SuppliersPage() {
                           <button
                             onClick={() => handleOpenStatement(s)}
                             className="font-bold text-slate-900 dark:text-slate-100 hover:text-brand-600 dark:hover:text-emerald-400 hover:underline text-right block transition-colors cursor-pointer"
-                            title="عرض كشف حساب المورد"
                           >
                             {s.name}
                           </button>
@@ -401,17 +407,14 @@ export default function SuppliersPage() {
                         <td className="p-4 text-slate-600 dark:text-slate-400 text-xs">{s.notes || '---'}</td>
                         <td className="p-4">
                           <div className="flex items-center justify-center gap-2">
-                            {/* كشف حساب */}
                             <button
                               onClick={() => handleOpenStatement(s)}
                               className="px-2.5 py-1.5 bg-blue-50 dark:bg-blue-950/60 hover:bg-blue-100 dark:hover:bg-blue-900/60 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-800 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
-                              title="عرض كشف حساب وسجل تعاملات المورد"
                             >
                               <FileText className="w-3.5 h-3.5" />
                               <span>كشف حساب</span>
                             </button>
 
-                            {/* سداد دفعة */}
                             <button
                               onClick={() => {
                                 setPaymentSupplier(s);
@@ -419,26 +422,21 @@ export default function SuppliersPage() {
                                 setPaymentNotes('');
                               }}
                               className="px-2.5 py-1.5 bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
-                              title="سداد دفعة نقدية للمورد"
                             >
                               <DollarSign className="w-3.5 h-3.5" />
                               <span>سداد دفعة</span>
                             </button>
 
-                            {/* تعديل */}
                             <button
                               onClick={() => setEditSupplier({ ...s })}
                               className="p-1.5 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-lg transition-colors border border-slate-200 dark:border-slate-700 cursor-pointer"
-                              title="تعديل بيانات المورد"
                             >
                               <Edit className="w-4 h-4" />
                             </button>
 
-                            {/* حذف */}
                             <button
                               onClick={() => handleDeleteSupplier(s)}
                               className="p-1.5 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors border border-slate-200 dark:border-slate-700 cursor-pointer"
-                              title="حذف المورد"
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
@@ -454,13 +452,33 @@ export default function SuppliersPage() {
         </div>
       </div>
 
-      {/* 3️⃣ Supplier Statement Modal */}
+      {/* Supplier Statement Modal & Print Sheet */}
       {statementSupplier && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-          <div className="bg-white dark:bg-[#0B132B] rounded-3xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden border border-slate-200 dark:border-slate-800">
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm print:p-0 print:static print:bg-transparent print:z-auto">
+          <div className="bg-white dark:bg-[#0B132B] rounded-3xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden border border-slate-200 dark:border-slate-800 print:border-none print:shadow-none print:max-w-none print:max-h-none print:rounded-none print:overflow-visible">
             
-            {/* Modal Header */}
-            <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-slate-50 dark:bg-slate-850">
+            {/* Printable Official Header */}
+            <div className="hidden print:block mb-6 border-b-2 border-slate-900 pb-4 text-center">
+              <h1 className="text-2xl font-black text-slate-900 mb-1">الفرماوي جروب لتجارة وتوزيع المواد الغذائية بالجملة والتجزئة</h1>
+              <p className="text-sm font-bold text-slate-700">كشف حساب وسجل حركات المورد التفصيلي</p>
+              <div className="flex justify-between items-center text-xs mt-4 pt-2 border-t border-slate-300">
+                <div>
+                  <span className="font-bold">المورد / الشركة: </span>
+                  <span>{statementSupplier.company_name || statementSupplier.company || statementSupplier.name}</span>
+                </div>
+                <div>
+                  <span className="font-bold">المسؤول: </span>
+                  <span>{statementSupplier.name}</span>
+                </div>
+                <div>
+                  <span className="font-bold">تاريخ الطباعة: </span>
+                  <span>{new Date().toLocaleDateString('ar-EG')}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Screen Header */}
+            <div className="p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-slate-50 dark:bg-slate-850 print:hidden">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-2xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 flex items-center justify-center font-bold border border-blue-200 dark:border-blue-800">
                   <FileText className="w-5 h-5" />
@@ -478,7 +496,6 @@ export default function SuppliersPage() {
                 <button
                   onClick={() => window.print()}
                   className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
-                  title="طباعة كشف الحساب"
                 >
                   <Printer className="w-4 h-4" />
                 </button>
@@ -492,45 +509,47 @@ export default function SuppliersPage() {
             </div>
 
             {/* Modal Body */}
-            <div className="p-5 sm:p-6 overflow-y-auto space-y-5 scrollbar-thin">
+            <div className="p-5 sm:p-6 overflow-y-auto space-y-5 print:p-0 print:overflow-visible">
               {statementLoading ? (
-                <div className="py-16 text-center text-slate-500">
+                <div className="py-16 text-center text-slate-500 print:hidden">
                   <Loader2 className="w-8 h-8 animate-spin mx-auto text-blue-600 mb-2" />
                   <p className="text-xs font-bold">جاري جلب تفاصيل فواتير التوريد والسدادات...</p>
                 </div>
               ) : (
                 <>
                   {/* Summary Cards */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
-                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">إجمالي فواتير التوريد (المشتريات)</span>
-                      <p className="text-lg font-black text-slate-900 dark:text-white font-mono mt-1">
-                        {formatPriceShort(statementPurchasesTotal)}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 print:grid-cols-3 print:gap-4 print:mb-6">
+                    <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 print:border-slate-400 print:p-2.5">
+                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 print:text-black">إجمالي البضاعة + الرصيد الافتتاحي</span>
+                      <p className="text-lg font-black text-slate-900 dark:text-white font-mono mt-1 print:text-base print:text-black">
+                        {formatPriceShort(statementPurchasesTotal + openingBal)}
                       </p>
-                      <span className="text-[10px] text-slate-400 mt-0.5 block">{statementPurchases.length} فاتورة مسجلة</span>
+                      <span className="text-[10px] text-slate-400 mt-0.5 block print:text-black">
+                        {statementPurchases.length} فواتير {openingBal > 0 ? `+ افتتاحي (${formatPriceShort(openingBal)})` : ''}
+                      </span>
                     </div>
 
-                    <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
-                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">إجمالي السدادات والدفعات النقدية</span>
-                      <p className="text-lg font-black text-emerald-600 dark:text-emerald-400 font-mono mt-1">
+                    <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 print:border-slate-400 print:p-2.5">
+                      <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 print:text-black">إجمالي المسدد للمورد</span>
+                      <p className="text-lg font-black text-emerald-600 dark:text-emerald-400 font-mono mt-1 print:text-base print:text-black">
                         {formatPriceShort(statementTotalPaid)}
                       </p>
-                      <span className="text-[10px] text-slate-400 mt-0.5 block">{statementPayments.length} سندات دفع نقدية</span>
+                      <span className="text-[10px] text-slate-400 mt-0.5 block print:text-black">{statementPayments.length} سندات دفع + سداد فواتير كاش</span>
                     </div>
 
-                    <div className="p-4 rounded-2xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/60">
-                      <span className="text-[11px] font-bold text-red-700 dark:text-red-300">الرصيد المتبقي المستحق له حالياً</span>
-                      <p className="text-xl font-black text-red-600 dark:text-red-400 font-mono mt-1">
+                    <div className="p-4 rounded-2xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/60 print:border-slate-400 print:p-2.5">
+                      <span className="text-[11px] font-bold text-red-700 dark:text-red-300 print:text-black">الرصيد المتبقي المستحق له</span>
+                      <p className="text-xl font-black text-red-600 dark:text-red-400 font-mono mt-1 print:text-base print:text-black">
                         {formatPriceShort(statementCurrentBalance)}
                       </p>
-                      <span className="text-[10px] text-red-500/80 mt-0.5 block font-bold">
-                        {statementCurrentBalance > 0 ? 'مبلغ مستحق السداد للمورد' : 'الحساب خالص بالكامل'}
+                      <span className="text-[10px] text-red-500/80 mt-0.5 block font-bold print:text-black">
+                        {statementCurrentBalance > 0 ? 'مبلغ مستحق السداد' : 'الحساب خالص'}
                       </span>
                     </div>
                   </div>
 
                   {/* Tabs */}
-                  <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-2">
+                  <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-2 print:hidden">
                     <button
                       onClick={() => setStatementTab('all')}
                       className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
@@ -564,160 +583,68 @@ export default function SuppliersPage() {
                   </div>
 
                   {/* Statement Table */}
-                  <div className="border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-xs">
-                    {statementTab === 'all' && (
-                      <table className="w-full text-right text-xs">
-                        <thead className="bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-slate-700">
-                          <tr>
-                            <th className="p-3">التاريخ والوقت</th>
-                            <th className="p-3">نوع الحركة</th>
-                            <th className="p-3">المرجع / الفاتورة</th>
-                            <th className="p-3">دائن (+) بضاعة موردة</th>
-                            <th className="p-3">مدين (-) مسدد للمورد</th>
-                            <th className="p-3">البيان / الملاحظات</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-medium">
-                          {combinedStatement.length === 0 ? (
-                            <tr><td colSpan={6} className="p-8 text-center text-slate-400">لا توجد حركات مسجلة للمورد حتى الآن</td></tr>
-                          ) : (
-                            combinedStatement.map(it => (
-                              <tr key={it.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                                <td className="p-3 font-mono whitespace-nowrap text-slate-500 dark:text-slate-400">
-                                  {new Date(it.date).toLocaleDateString('ar-EG', { year: 'numeric', month: 'short', day: 'numeric' })}
-                                  <span className="block text-[10px] text-slate-400 font-mono">
-                                    {new Date(it.date).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}
-                                  </span>
-                                </td>
-                                <td className="p-3 whitespace-nowrap">
-                                  <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border ${
-                                    it.type.includes('فاتورة')
-                                      ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800'
-                                      : 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
-                                  }`}>
-                                    {it.type}
-                                  </span>
-                                </td>
-                                <td className="p-3 font-mono font-bold text-slate-900 dark:text-white whitespace-nowrap">
-                                  {it.ref}
-                                </td>
-                                <td className="p-3 font-mono font-bold text-slate-900 dark:text-white whitespace-nowrap">
-                                  {it.inflowCredit > 0 ? formatPriceShort(it.inflowCredit) : '---'}
-                                </td>
-                                <td className="p-3 font-mono font-bold text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
-                                  {it.outflowDebit > 0 ? formatPriceShort(it.outflowDebit) : '---'}
-                                </td>
-                                <td className="p-3 text-slate-600 dark:text-slate-300 max-w-xs">
-                                  {it.notes}
-                                </td>
-                              </tr>
-                            ))
-                          )}
-                        </tbody>
-                      </table>
-                    )}
+                  <div className="border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-xs print:border-none print:shadow-none print:rounded-none">
+                    <table className="w-full text-right text-xs border-collapse">
+                      <thead className="bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-slate-700 print:bg-slate-100 print:text-black">
+                        <tr>
+                          <th className="p-3 print:p-2 print:border print:border-slate-300">التاريخ والوقت</th>
+                          <th className="p-3 print:p-2 print:border print:border-slate-300">نوع الحركة</th>
+                          <th className="p-3 print:p-2 print:border print:border-slate-300">المرجع / الفاتورة</th>
+                          <th className="p-3 print:p-2 print:border print:border-slate-300">دائن (+) بضاعة موردة</th>
+                          <th className="p-3 print:p-2 print:border print:border-slate-300">مدين (-) مسدد للمورد</th>
+                          <th className="p-3 print:p-2 print:border print:border-slate-300">البيان / الملاحظات</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-medium print:divide-slate-300">
+                        {combinedStatement.length === 0 ? (
+                          <tr><td colSpan={6} className="p-8 text-center text-slate-400 print:border">لا توجد حركات مسجلة للمورد حتى الآن</td></tr>
+                        ) : (
+                          combinedStatement.map(it => (
+                            <tr key={it.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 print:bg-transparent">
+                              <td className="p-3 font-mono whitespace-nowrap text-slate-500 dark:text-slate-400 print:p-2 print:text-black print:border print:border-slate-300">
+                                {new Date(it.date).toLocaleDateString('ar-EG', { year: 'numeric', month: 'short', day: 'numeric' })}
+                              </td>
+                              <td className="p-3 whitespace-nowrap print:p-2 print:text-black print:border print:border-slate-300">
+                                <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border print:p-0 print:border-none ${
+                                  it.type.includes('افتتاحي')
+                                    ? 'bg-purple-50 dark:bg-purple-950/60 text-purple-800 dark:text-purple-300 border-purple-200 dark:border-purple-800'
+                                    : it.type.includes('فاتورة')
+                                    ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800'
+                                    : 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                                }`}>
+                                  {it.type}
+                                </span>
+                              </td>
+                              <td className="p-3 font-mono font-bold text-slate-900 dark:text-white whitespace-nowrap print:p-2 print:text-black print:border print:border-slate-300">
+                                {it.ref}
+                              </td>
+                              <td className="p-3 font-mono font-bold text-slate-900 dark:text-white whitespace-nowrap print:p-2 print:text-black print:border print:border-slate-300">
+                                {it.inflowCredit > 0 ? formatPriceShort(it.inflowCredit) : '---'}
+                              </td>
+                              <td className="p-3 font-mono font-bold text-emerald-600 dark:text-emerald-400 whitespace-nowrap print:p-2 print:text-black print:border print:border-slate-300">
+                                {it.outflowDebit > 0 ? formatPriceShort(it.outflowDebit) : '---'}
+                              </td>
+                              <td className="p-3 text-slate-600 dark:text-slate-300 print:p-2 print:text-black print:border print:border-slate-300">
+                                {it.notes}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
 
-                    {statementTab === 'purchases' && (
-                      <table className="w-full text-right text-xs">
-                        <thead className="bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-slate-700">
-                          <tr>
-                            <th className="p-3">التاريخ</th>
-                            <th className="p-3">رقم الفاتورة</th>
-                            <th className="p-3">إجمالي الفاتورة</th>
-                            <th className="p-3">المسدد منها</th>
-                            <th className="p-3">المتبقي</th>
-                            <th className="p-3">البيان</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-medium">
-                          {statementPurchases.length === 0 ? (
-                            <tr><td colSpan={6} className="p-8 text-center text-slate-400">لا توجد فواتير توريد مسجلة</td></tr>
-                          ) : (
-                            statementPurchases.map(p => {
-                              const tot = Number(p.total || p.total_amount || 0);
-                              const pd = Number(p.paid_amount || 0);
-                              const rem = Number(p.remaining_amount !== undefined && p.remaining_amount !== null ? p.remaining_amount : Math.max(0, tot - pd));
-                              return (
-                                <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                                  <td className="p-3 font-mono text-slate-500 whitespace-nowrap">
-                                    {new Date(p.created_at).toLocaleDateString('ar-EG')}
-                                  </td>
-                                  <td className="p-3 font-mono font-bold text-slate-900 dark:text-white">
-                                    {p.invoice_no || p.invoice_number || String(p.id).slice(0, 8)}
-                                  </td>
-                                  <td className="p-3 font-mono font-bold text-slate-900 dark:text-white">
-                                    {formatPriceShort(tot)}
-                                  </td>
-                                  <td className="p-3 font-mono font-bold text-emerald-600">
-                                    {formatPriceShort(pd)}
-                                  </td>
-                                  <td className="p-3 font-mono font-bold text-red-600">
-                                    {formatPriceShort(rem)}
-                                  </td>
-                                  <td className="p-3 text-slate-600 dark:text-slate-300">
-                                    {p.notes || `فاتورة مشتريات (${p.items?.length || 1} أصناف)`}
-                                  </td>
-                                </tr>
-                              );
-                            })
-                          )}
-                        </tbody>
-                      </table>
-                    )}
-
-                    {statementTab === 'payments' && (
-                      <table className="w-full text-right text-xs">
-                        <thead className="bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-slate-700">
-                          <tr>
-                            <th className="p-3">التاريخ والوقت</th>
-                            <th className="p-3">رقم السند</th>
-                            <th className="p-3">المبلغ المسدد نقداً</th>
-                            <th className="p-3">البيان والملاحظات</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-medium">
-                          {statementPayments.length === 0 ? (
-                            <tr><td colSpan={4} className="p-8 text-center text-slate-400">لا توجد سدادات نقدية مسجلة</td></tr>
-                          ) : (
-                            statementPayments.map(pay => (
-                              <tr key={pay.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                                <td className="p-3 font-mono whitespace-nowrap text-slate-700 dark:text-slate-300">
-                                  <span className="font-bold block">
-                                    {new Date(pay.created_at || pay.payment_date).toLocaleDateString('ar-EG', { year: 'numeric', month: 'short', day: 'numeric' })}
-                                  </span>
-                                  <span className="text-[10px] text-slate-400 font-mono block">
-                                    {new Date(pay.created_at || pay.payment_date).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}
-                                  </span>
-                                </td>
-                                <td className="p-3 font-mono font-bold text-slate-900 dark:text-white">
-                                  <span className="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded text-[11px] border border-slate-200 dark:border-slate-700">
-                                    {String(pay.id).slice(0, 10)}
-                                  </span>
-                                </td>
-                                <td className="p-3 font-mono font-black text-emerald-600 dark:text-emerald-400 text-sm whitespace-nowrap">
-                                  {formatPriceShort(Number(pay.amount || 0))}
-                                </td>
-                                <td className="p-3 text-slate-600 dark:text-slate-300">
-                                  <span>{pay.notes || 'سداد نقدي لحساب المورد'}</span>
-                                  {pay.payment_method && (
-                                    <span className="mr-2 px-1.5 py-0.5 bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 text-[10px] rounded border border-emerald-200 dark:border-emerald-800">
-                                      {pay.payment_method}
-                                    </span>
-                                  )}
-                                </td>
-                              </tr>
-                            ))
-                          )}
-                        </tbody>
-                      </table>
-                    )}
+                  {/* Print Official Signatures */}
+                  <div className="hidden print:flex justify-between items-center mt-12 pt-6 border-t border-slate-300 text-xs font-bold">
+                    <div>توقيع مسؤول الحسابات: ...........................</div>
+                    <div>توقيع واستلام المورد: ...........................</div>
                   </div>
                 </>
               )}
             </div>
 
             {/* Modal Footer */}
-            <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-850 flex justify-between items-center">
+            <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-850 flex justify-between items-center print:hidden">
               <span className="text-xs font-bold text-slate-500">
                 الرصيد المستحق للمورد: <strong className="font-mono text-red-600 dark:text-red-400 text-sm">{formatPriceShort(statementCurrentBalance)}</strong>
               </span>
@@ -734,7 +661,7 @@ export default function SuppliersPage() {
 
       {/* Add Supplier Modal */}
       {showAddModal && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm print:hidden">
           <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-xl w-full max-w-md overflow-hidden border border-slate-300 dark:border-slate-800">
             <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-emerald-50 dark:bg-emerald-950/60">
               <h3 className="font-bold text-base text-emerald-900 dark:text-emerald-300">إضافة مورد جديد</h3>
@@ -827,7 +754,7 @@ export default function SuppliersPage() {
 
       {/* Edit Supplier Modal */}
       {editSupplier && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm print:hidden">
           <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-xl w-full max-w-md overflow-hidden border border-slate-300 dark:border-slate-800">
             <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-blue-50 dark:bg-blue-950/60">
               <h3 className="font-bold text-base text-blue-900 dark:text-blue-300">تعديل بيانات المورد</h3>
@@ -918,7 +845,7 @@ export default function SuppliersPage() {
 
       {/* Supplier Payment Modal */}
       {paymentSupplier && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm print:hidden">
           <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-xl w-full max-w-md overflow-hidden border border-slate-300 dark:border-slate-800">
             <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-emerald-50 dark:bg-emerald-950/60">
               <h3 className="font-bold text-base text-emerald-900 dark:text-emerald-300 flex items-center gap-2">
@@ -982,6 +909,37 @@ export default function SuppliersPage() {
           </div>
         </div>
       )}
+
+      {/* Global CSS for Paper Printing */}
+      <style jsx global>{`
+        @media print {
+          @page {
+            margin: 12mm 10mm 15mm 10mm;
+            size: A4 portrait;
+          }
+          body {
+            background: white !important;
+            color: black !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+          header, nav, aside, .print\\:hidden {
+            display: none !important;
+          }
+          .overflow-x-auto, .overflow-y-auto {
+            overflow: visible !important;
+            height: auto !important;
+            max-height: none !important;
+          }
+          table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+          }
+          th, td {
+            border: 1px solid #cbd5e1 !important;
+          }
+        }
+      `}</style>
     </AdminLayout>
   );
 }
