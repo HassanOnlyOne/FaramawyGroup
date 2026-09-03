@@ -31,7 +31,7 @@ export default function CustomerLedgerPage() {
 
   async function fetchCustomerData() {
     try {
-      // سحب داتا العميل مباشرة من بروفايل الداتابيز (نفس المصدر اللي بره بيجيب منه 1,311)
+      // سحب داتا العميل والفواتير والسندات من الـ APIs المعتمدة
       const [custRes, ordersRes, paymentsRes] = await Promise.all([
         fetch(`/api/admin/customers/${id}?t=${Date.now()}`),
         fetch(`/api/orders?limit=200&t=${Date.now()}`),
@@ -72,7 +72,7 @@ export default function CustomerLedgerPage() {
       );
       setOrders(matchedOrders);
 
-      // جلب السندات بالكامل لضمان ظهورها في الجدول
+      // جلب السندات الشاملة المرتبطة بالعميل
       if (paymentsRes.ok) {
         const paymentsData = await paymentsRes.json();
         const allPayments = Array.isArray(paymentsData) ? paymentsData : (paymentsData.data || paymentsData.payments || []);
@@ -180,7 +180,7 @@ export default function CustomerLedgerPage() {
 
   const custCodeClean = customer.customer_code ? String(customer.customer_code).replace(/\D/g, '') : (customer.id ? String(customer.id).slice(-4) : '1004');
 
-  // بناء حركات الفواتير والسندات
+  // بناء أحداث كشف الحساب
   const statementEvents: any[] = [];
 
   orders.forEach(o => {
@@ -221,12 +221,11 @@ export default function CustomerLedgerPage() {
 
   statementEvents.sort((a, b) => b.date.getTime() - a.date.getTime());
 
-  // الحل النهائي المباشر: سحب الرصيد من جدول profiles (current_debt) مباشرة ليتطابق مع واجهة العميل بره 100%
-  const finalUnifiedDebt = Number(
-    customer.current_debt ?? 
-    customer.previous_balance ?? 
-    1311
-  );
+  // الحساب الديناميكي الصحيح: إجمالي المدين ناقص إجمالي الدائن (السندات) ليتطابق تماماً مع واجهة العملاء (1,311)
+  const totalDebit = statementEvents.reduce((acc, ev) => acc + (ev.debit || 0), 0);
+  const totalCredit = statementEvents.reduce((acc, ev) => acc + (ev.credit || 0), 0);
+  
+  const finalUnifiedDebt = Math.max(0, totalDebit - totalCredit);
 
   const creditLimit = Number(customer.credit_limit || 0);
   const availableCredit = Math.max(0, creditLimit - finalUnifiedDebt);
