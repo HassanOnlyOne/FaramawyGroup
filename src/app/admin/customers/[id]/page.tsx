@@ -23,6 +23,7 @@ export default function CustomerLedgerPage() {
   const [editCreditLimit, setEditCreditLimit] = useState('');
   const [editCreditEnabled, setEditCreditEnabled] = useState(true);
   const [formLoading, setFormLoading] = useState(false);
+  const [paymentLoading, setPaymentLoading] = useState(false);
 
   useEffect(() => {
     fetchCustomerData();
@@ -33,7 +34,7 @@ export default function CustomerLedgerPage() {
       const [custRes, ordersRes, paymentsRes] = await Promise.all([
         fetch(`/api/admin/customers/${id}?t=${Date.now()}`),
         fetch(`/api/orders?limit=200&t=${Date.now()}`),
-        fetch(`/api/payments?customer_id=${id}&t=${Date.now()}`)
+        fetch(`/api/payments?t=${Date.now()}`) // جلب كل السندات العامة لضمان عدم ضياع أي سند للعميل
       ]);
 
       let prof: any = null;
@@ -69,16 +70,16 @@ export default function CustomerLedgerPage() {
       );
       setOrders(matchedOrders);
 
+      // الفلترة الذكية والشاملة لسندات هذا العميل بالتحديد (تمنع اختفاء أي سند)
       if (paymentsRes.ok) {
         const paymentsData = await paymentsRes.json();
         const allPayments = Array.isArray(paymentsData) ? paymentsData : (paymentsData.data || paymentsData.payments || []);
-        const matchedPayments = allPayments.filter((p: any) => 
-          String(p.customer_id) === String(id) ||
-          String(p.customer?.id) === String(id) ||
-          (custCode && (String(p.customer_code || '').includes(custCode) || String(p.customer?.customer_code || '').includes(custCode))) ||
-          !p.customer_id
-        );
-        setPayments(matchedPayments.length > 0 ? matchedPayments : allPayments);
+        const matchedPayments = allPayments.filter((p: any) => {
+          const pCustId = String(p.customer_id || p.customer?.id || '');
+          const pCode = String(p.customer_code || '').replace(/\D/g, '');
+          return pCustId === String(id) || (custCode && pCode === custCode) || (custCode && pCode.includes(custCode));
+        });
+        setPayments(matchedPayments);
       }
     } catch (err) {
       console.error(err);
@@ -116,7 +117,9 @@ export default function CustomerLedgerPage() {
 
   const handleRecordPayment = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    setFormLoading(true);
+    if (paymentLoading) return; // منع الضغط المتكرر Double Click
+    setPaymentLoading(true);
+
     const formData = new FormData(e.currentTarget);
     const amountVal = parseFloat(formData.get('amount') as string);
     const notesVal = (formData.get('notes') as string) || 'سداد نقدية لحساب الأجل';
@@ -146,7 +149,7 @@ export default function CustomerLedgerPage() {
     } catch (err) {
       toast({ title: 'خطأ في الاتصال', type: 'error' });
     } finally {
-      setFormLoading(false);
+      setPaymentLoading(false);
     }
   };
 
@@ -216,15 +219,8 @@ export default function CustomerLedgerPage() {
 
   statementEvents.sort((a, b) => b.date.getTime() - a.date.getTime());
 
-  // الحل الجذري: الحساب المباشر الدقيق (إجمالي المدين ناقص إجمالي الدائن من الحركات الفعلية الظاهرة)
-  const totalDebit = statementEvents.reduce((acc, ev) => acc + ev.debit, 0);
-  const totalCredit = statementEvents.reduce((acc, ev) => acc + ev.credit, 0);
-  // الحل المستقبلي الذكي: جلب الرصيد الحقيقي من البروفايل ديناميكياً بدون أي أرقام ثابتة
-  const finalUnifiedDebt = Number(
-    customer.current_debt ?? 
-    customer.previous_balance ?? 
-    Math.max(0, totalDebit - totalCredit)
-  );
+  // الربط المباشر المضمون مع قاعدة البيانات للرصيد الحقيقي
+  const finalUnifiedDebt = Number(customer.current_debt !== undefined && customer.current_debt !== null ? customer.current_debt : (customer.previous_balance || 0));
 
   const creditLimit = Number(customer.credit_limit || 0);
   const availableCredit = Math.max(0, creditLimit - finalUnifiedDebt);
@@ -432,8 +428,8 @@ export default function CustomerLedgerPage() {
               </div>
 
               <div className="pt-3 flex gap-2">
-                <button type="submit" disabled={formLoading} className="flex-1 btn-primary py-2.5 rounded-xl font-bold text-xs shadow cursor-pointer">
-                  {formLoading ? 'جاري التسجيل...' : 'تأكيد السند وتحديث الرصيد'}
+                <button type="submit" disabled={paymentLoading} className="flex-1 btn-primary py-2.5 rounded-xl font-bold text-xs shadow cursor-pointer disabled:opacity-50">
+                  {paymentLoading ? 'جاري التسجيل...' : 'تأكيد السند وتحديث الرصيد'}
                 </button>
                 <button type="button" onClick={() => setShowPaymentModal(false)} className="btn-secondary px-4 py-2.5 rounded-xl text-xs font-bold cursor-pointer">
                   إلغاء
