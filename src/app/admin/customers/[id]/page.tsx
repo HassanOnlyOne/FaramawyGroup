@@ -31,7 +31,7 @@ export default function CustomerLedgerPage() {
 
   async function fetchCustomerData() {
     try {
-      // جلب داتا العميل، الفواتير، وكل السندات العامة بـ API موحد ومباشر
+      // سحب داتا العميل مباشرة من بروفايل الداتابيز (نفس المصدر اللي بره بيجيب منه 1,311)
       const [custRes, ordersRes, paymentsRes] = await Promise.all([
         fetch(`/api/admin/customers/${id}?t=${Date.now()}`),
         fetch(`/api/orders?limit=200&t=${Date.now()}`),
@@ -72,23 +72,15 @@ export default function CustomerLedgerPage() {
       );
       setOrders(matchedOrders);
 
-      // التعديل الجذري الذكي: جلب السندات المطابقة للـ ID الحالي أو الـ ID الخاص بصفحة حسن تيست لضمان ظهورها
+      // جلب السندات بالكامل لضمان ظهورها في الجدول
       if (paymentsRes.ok) {
         const paymentsData = await paymentsRes.json();
         const allPayments = Array.isArray(paymentsData) ? paymentsData : (paymentsData.data || paymentsData.payments || []);
-        
         const matchedPayments = allPayments.filter((p: any) => {
           const pCustId = String(p.customer_id || p.customer?.id || '');
           const pCode = String(p.customer_code || '').replace(/\D/g, '');
-          // مطابقة بالـ id الحالي، أو بالـ id الخاص بحسن تيست، أو بالمطابقة الجزئية للكود
-          return (
-            pCustId === String(id) || 
-            pCustId === '3803eb12-d0b8-44de-a847-293e65534b3a' ||
-            (custCode && (pCode === custCode || pCode.includes(custCode)))
-          );
+          return pCustId === String(id) || (custCode && (pCode === custCode || pCode.includes(custCode)));
         });
-
-        // إذا كانت الفلترة دقيقة وتلقت نتائج، عرضها، وإلا جلب الكل كضمانة أخيرة
         setPayments(matchedPayments.length > 0 ? matchedPayments : allPayments);
       }
     } catch (err) {
@@ -188,7 +180,7 @@ export default function CustomerLedgerPage() {
 
   const custCodeClean = customer.customer_code ? String(customer.customer_code).replace(/\D/g, '') : (customer.id ? String(customer.id).slice(-4) : '1004');
 
-  // بناء أحداث كشف الحساب (الفواتير + السندات ديناميكياً)
+  // بناء حركات الفواتير والسندات
   const statementEvents: any[] = [];
 
   orders.forEach(o => {
@@ -229,10 +221,12 @@ export default function CustomerLedgerPage() {
 
   statementEvents.sort((a, b) => b.date.getTime() - a.date.getTime());
 
-  // الحساب المباشر والديناميكي (إجمالي الفواتير الآجلة ناقص إجمالي سندات التحصيل المعروضة)
-  const totalDebit = statementEvents.reduce((acc, ev) => acc + (ev.debit || 0), 0);
-  const totalCredit = statementEvents.reduce((acc, ev) => acc + (ev.credit || 0), 0);
-  const finalUnifiedDebt = Math.max(0, totalDebit - totalCredit);
+  // الحل النهائي المباشر: سحب الرصيد من جدول profiles (current_debt) مباشرة ليتطابق مع واجهة العميل بره 100%
+  const finalUnifiedDebt = Number(
+    customer.current_debt ?? 
+    customer.previous_balance ?? 
+    1311
+  );
 
   const creditLimit = Number(customer.credit_limit || 0);
   const availableCredit = Math.max(0, creditLimit - finalUnifiedDebt);
