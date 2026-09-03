@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'معرف المورد وقيمة الدفعة مطلوبان' }, { status: 400 });
     }
 
-    // 1. Fetch existing supplier
+    // 1. جلب بيانات المورد
     let { data: supplier } = await adminClient
       .from('suppliers')
       .select('*')
@@ -39,9 +39,9 @@ export async function POST(req: NextRequest) {
 
     const currentBal = Number(supplier.current_balance !== undefined && supplier.current_balance !== null ? supplier.current_balance : (supplier.balance || 0));
     const newBalance = Math.max(0, currentBal - paymentAmount);
-    const supplierTitle = supplier.company_name || supplier.name || 'مورد';
+    const supplierTitle = supplier.company_name || supplier.company || supplier.name || 'مورد';
 
-    // 2. Resolve caller user
+    // 2. بيانات المستخدم
     const { data: { user: callerUser } } = await supabase.auth.getUser().catch(() => ({ data: { user: null } }));
     let callerName = '';
     let callerRole = '';
@@ -51,7 +51,7 @@ export async function POST(req: NextRequest) {
       callerRole = callerProf?.role || '';
     }
 
-    // 3. Insert into supplier_payments table as requested by user
+    // 3. إدراج السند في جدول supplier_payments
     const paymentInsertPayload: any = {
       id: crypto.randomUUID(),
       supplier_id: supplierId,
@@ -70,7 +70,7 @@ export async function POST(req: NextRequest) {
       .select()
       .maybeSingle();
 
-    if (payErr && (payErr.message?.includes('payment_method') || payErr.message?.includes('created_by'))) {
+    if (payErr) {
       const fallbackPayload = { ...paymentInsertPayload };
       delete fallbackPayload.payment_method;
       delete fallbackPayload.created_by;
@@ -80,7 +80,7 @@ export async function POST(req: NextRequest) {
       insertedPayment = pData;
     }
 
-    // 4. Insert into treasury_transactions table for Treasury outflow tracking
+    // 4. تسجيل حركة الخزينة
     const treasuryEntry = {
       id: crypto.randomUUID(),
       transaction_type: 'سداد دفعة مورد',
@@ -99,44 +99,19 @@ export async function POST(req: NextRequest) {
       console.warn('treasury_transactions insert warning:', errTx);
     }
 
-    // 5. Deduct from active purchase invoices for this supplier
-    const { data: supPurchases } = await adminClient
-      .from('purchases')
-      .select('*')
-      .or(`supplier_id.eq.${supplierId},supplier_name.ilike.%${supplier.name || supplier.company_name}%`)
-      .order('created_at', { ascending: true });
-
-    if (supPurchases && supPurchases.length > 0) {
-      let remainingToDeduct = paymentAmount;
-      for (const pur of supPurchases) {
-        if (remainingToDeduct <= 0) break;
-        const tot = Number(pur.total || pur.total_amount || 0);
-        const pd = Number(pur.paid_amount || 0);
-        const rem = Number(pur.remaining_amount !== undefined && pur.remaining_amount !== null ? pur.remaining_amount : Math.max(0, tot - pd));
-
-        if (rem > 0) {
-          const deduct = Math.min(rem, remainingToDeduct);
-          const newPaid = pd + deduct;
-          const newRem = Math.max(0, rem - deduct);
-          remainingToDeduct -= deduct;
-
-          await adminClient
-            .from('purchases')
-            .update({ paid_amount: newPaid, remaining_amount: newRem })
-            .eq('id', pur.id);
-        }
-      }
-    }
-
-    // 6. Update supplier balance
-    const supUpdates: any = { balance: newBalance, current_balance: newBalance, updated_at: new Date().toISOString() };
+    // 5. تحديث رصيد المورد بدون المساس بالفواتير الأصلية
+    const supUpdates: any = { 
+      balance: newBalance, 
+      current_balance: newBalance, 
+      updated_at: new Date().toISOString() 
+    };
+    
     const { error: upErr } = await adminClient.from('suppliers').update(supUpdates).eq('id', supplierId);
-    if (upErr && (upErr.message?.includes('current_balance') || upErr.message?.includes('updated_at'))) {
-      const fallbackUpdates: any = { balance: newBalance };
-      await adminClient.from('suppliers').update(fallbackUpdates).eq('id', supplierId);
+    if (upErr) {
+      await adminClient.from('suppliers').update({ balance: newBalance, current_balance: newBalance }).eq('id', supplierId);
     }
 
-    // 7. Log in audit_logs
+    // 6. تسجيل العملية في سجل التدقيق
     await logAction({
       actionType: 'سداد دفعة للمورد',
       category: 'الخزينة والتحصيلات',
@@ -148,7 +123,7 @@ export async function POST(req: NextRequest) {
       success: true,
       new_balance: newBalance,
       payment: insertedPayment || paymentInsertPayload,
-      message: 'تم تسجيل سداد الدفعة وخصمها من رصيد المورد والخزينة بنجاح'
+      message: 'تم تسجيل سداد الدفعة وحفظ سند الصرف بنجاح'
     }, { status: 200 });
 
   } catch (err: any) {
