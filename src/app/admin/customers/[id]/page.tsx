@@ -7,6 +7,7 @@ import { AdminLayout } from '@/components/layout/admin-layout';
 import { useToast } from '@/components/ui/toast';
 import { ArrowRight, DollarSign, Printer, Loader2, Phone, FileText } from 'lucide-react';
 import { useNumberFormat } from '@/context/number-format-context';
+import { BRAND } from '@/lib/constants';
 import { createClient } from '@/lib/supabase/client';
 
 export default function CustomerLedgerPage() {
@@ -34,7 +35,6 @@ export default function CustomerLedgerPage() {
     try {
       const supabase = createClient();
 
-      // 1. جلب بيانات بروفايل العميل مباشرة من Supabase لضمان دقة المعرف
       const { data: prof } = await supabase
         .from('profiles')
         .select('*')
@@ -50,7 +50,6 @@ export default function CustomerLedgerPage() {
 
       const custCode = prof?.customer_code ? String(prof.customer_code).replace(/\D/g, '') : '';
 
-      // 2. جلب طلبات العميل بنفس منطق صفحة العميل المباشرة
       let orderQuery = supabase.from('orders').select('*');
       if (custCode) {
         orderQuery = orderQuery.or(`customer_id.eq.${id},customer_code.eq.${custCode},store_code.eq.${custCode}`);
@@ -60,7 +59,6 @@ export default function CustomerLedgerPage() {
       const { data: fetchedOrders } = await orderQuery.order('created_at', { ascending: false });
       setOrders(fetchedOrders || []);
 
-      // 3. جلب السندات من customer_payments أولاً، ثم الرجوع لـ payments القديم إن لزم
       const { data: payList } = await supabase
         .from('customer_payments')
         .select('*')
@@ -79,7 +77,6 @@ export default function CustomerLedgerPage() {
         if (oldPays && oldPays.length > 0) {
           setPayments(oldPays);
         } else {
-          // جلب شامل بحسب كود العميل كخيار أخير في حال غياب ربط الـ UUID
           const { data: allFallbackPays } = await supabase
             .from('customer_payments')
             .select('*')
@@ -102,6 +99,7 @@ export default function CustomerLedgerPage() {
 
   const handleUpdateCredit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (formLoading) return;
     setFormLoading(true);
     try {
       const supabase = createClient();
@@ -135,7 +133,7 @@ export default function CustomerLedgerPage() {
 
     const formData = new FormData(e.currentTarget);
     const amountVal = parseFloat(formData.get('amount') as string);
-    const notesVal = (formData.get('notes') as string) || 'سداد نقدية لحساب الأجل';
+    const notesVal = (formData.get('notes') as string) || 'سداد نقدي لحساب الأجل';
     const custCode = customer?.customer_code ? String(customer.customer_code).replace(/\D/g, '') : '1004';
 
     try {
@@ -154,7 +152,6 @@ export default function CustomerLedgerPage() {
         setShowPaymentModal(false);
         await fetchCustomerData();
       } else {
-        // تجربة مسار API في حال وجود قيود صلاحيات مباشرة
         const res = await fetch('/api/payments', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -168,16 +165,18 @@ export default function CustomerLedgerPage() {
           })
         });
 
-        if (res.ok) {
+        const resData = await res.json().catch(() => ({}));
+
+        if (res.ok || resData.success) {
           toast({ title: 'تم تسجيل تحصيل النقدية وتحديث المديونية بنجاح', type: 'success' });
           setShowPaymentModal(false);
           await fetchCustomerData();
         } else {
-          toast({ title: 'خطأ في تسجيل التحصيل', type: 'error' });
+          toast({ title: resData.error || 'خطأ في تسجيل التحصيل', type: 'error' });
         }
       }
-    } catch (err) {
-      toast({ title: 'خطأ في الاتصال', type: 'error' });
+    } catch (err: any) {
+      toast({ title: 'خطأ في الاتصال', description: err.message, type: 'error' });
     } finally {
       setPaymentLoading(false);
     }
@@ -208,7 +207,6 @@ export default function CustomerLedgerPage() {
 
   const custCodeClean = customer.customer_code ? String(customer.customer_code).replace(/\D/g, '') : (customer.id ? String(customer.id).slice(-4) : '1004');
 
-  // استبعاد الفواتير الملغاة والمعلقة والمستردة بنفس آلية صفحة العميل
   const creditWithdrawals = orders.filter((o: any) => {
     if (['pending', 'cancelled', 'returned'].includes(o.status)) return false;
     const isCredit = o.payment_method === 'credit';
@@ -253,7 +251,6 @@ export default function CustomerLedgerPage() {
     });
   });
 
-  // ترتيب زمني تصاعدي لحساب الرصيد التراكمي المطابق لصفحة العميل
   statementEvents.sort((a, b) => a.date.getTime() - b.date.getTime());
 
   let runningBalance = 0;
@@ -268,14 +265,33 @@ export default function CustomerLedgerPage() {
   const creditLimit = Number(customer.credit_limit || 0);
   const availableCredit = Math.max(0, creditLimit - finalUnifiedDebt);
 
-  // إعادة الترتيب للعرض التنازلي في الجدول (الأحدث أولاً)
   const displayEvents = [...statementEvents].sort((a, b) => b.date.getTime() - a.date.getTime());
 
   return (
     <AdminLayout>
       <div className="space-y-6">
         
-        {/* شريط الإجراءات والترويسة */}
+        {/* ترويسة خاصة بالطباعة الورقية فقط (Official Letterhead) */}
+        <div className="hidden print:block mb-6 border-b-2 border-slate-900 pb-4 text-center">
+          <h1 className="text-2xl font-black text-slate-900 mb-1">شركة الفرماوي جروب لتجارة وتوزيع المواد الغذائية</h1>
+          <p className="text-sm font-bold text-slate-700">كشف حساب تفصيلي لحساب المسحوبات الآجلة والتحصيلات</p>
+          <div className="flex justify-between items-center text-xs mt-4 pt-2 border-t border-slate-200">
+            <div>
+              <span className="font-bold">اسم العميل: </span>
+              <span>{customer.store_name || customer.full_name}</span>
+            </div>
+            <div>
+              <span className="font-bold">كود العميل: </span>
+              <span className="font-mono">#{custCodeClean}</span>
+            </div>
+            <div>
+              <span className="font-bold">تاريخ الطباعة: </span>
+              <span>{new Date().toLocaleDateString('ar-EG')}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* شريط الإجراءات والترويسة على الشاشة */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm print:hidden">
           <div className="flex items-center gap-4">
             <Link href="/admin/customers" className="p-2 bg-slate-100 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-200 text-slate-700 dark:text-slate-300">
@@ -312,67 +328,67 @@ export default function CustomerLedgerPage() {
         </div>
 
         {/* بطاقات المؤشرات المالية */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
-          <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm">
-            <span className="text-xs font-bold text-slate-500 dark:text-slate-400 block mb-1">إجمالي المديونية المتبقية المستحقة</span>
-            <span className="text-3xl font-black text-red-600 dark:text-red-400 font-mono">{formatPriceShort(finalUnifiedDebt)}</span>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 print:grid-cols-3 print:gap-4 print:mb-6">
+          <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm print:p-3 print:border-slate-300">
+            <span className="text-xs font-bold text-slate-500 dark:text-slate-400 block mb-1 print:text-black">إجمالي المديونية المتبقية المستحقة</span>
+            <span className="text-3xl font-black text-red-600 dark:text-red-400 font-mono print:text-xl print:text-black">{formatPriceShort(finalUnifiedDebt)}</span>
           </div>
-          <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm">
+          <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm print:p-3 print:border-slate-300">
             <div className="flex justify-between items-center mb-1">
-              <span className="text-xs font-bold text-slate-500 dark:text-slate-400">الحد الائتماني المعتمد</span>
+              <span className="text-xs font-bold text-slate-500 dark:text-slate-400 print:text-black">الحد الائتماني المعتمد</span>
               <button onClick={() => setShowCreditModal(true)} className="text-[11px] text-brand-600 dark:text-emerald-400 hover:underline font-bold print:hidden">تعديل</button>
             </div>
-            <span className="text-3xl font-black text-slate-900 dark:text-white font-mono">{formatPriceShort(creditLimit)}</span>
+            <span className="text-3xl font-black text-slate-900 dark:text-white font-mono print:text-xl print:text-black">{formatPriceShort(creditLimit)}</span>
           </div>
-          <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm">
-            <span className="text-xs font-bold text-slate-500 dark:text-slate-400 block mb-1">الرصيد الائتماني المتاح للشراء</span>
-            <span className="text-3xl font-black text-emerald-600 dark:text-emerald-400 font-mono">{formatPriceShort(availableCredit)}</span>
+          <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm print:p-3 print:border-slate-300">
+            <span className="text-xs font-bold text-slate-500 dark:text-slate-400 block mb-1 print:text-black">الرصيد الائتماني المتاح للشراء</span>
+            <span className="text-3xl font-black text-emerald-600 dark:text-emerald-400 font-mono print:text-xl print:text-black">{formatPriceShort(availableCredit)}</span>
           </div>
         </div>
 
         {/* جدول كشف الحساب الموحد */}
-        <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden">
-          <div className="p-5 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 flex justify-between items-center">
+        <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden print:border-none print:shadow-none print:rounded-none">
+          <div className="p-5 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 flex justify-between items-center print:hidden">
             <h2 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
               <FileText className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
               <span>كشف حساب تفصيلي للمسحوبات الآجلة والتحصيلات</span>
             </h2>
             <span className="text-xs font-bold text-slate-500 dark:text-slate-400">عدد الحركات: {formatNumber(displayEvents.length)}</span>
           </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-right text-sm">
-              <thead className="bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold text-xs border-b border-slate-200 dark:border-slate-700">
+          <div className="overflow-x-auto print:overflow-visible">
+            <table className="w-full text-right text-sm print:text-xs print:w-full border-collapse">
+              <thead className="bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold text-xs border-b border-slate-200 dark:border-slate-700 print:bg-slate-100 print:text-black">
                 <tr>
-                  <th className="p-4 whitespace-nowrap">التاريخ</th>
-                  <th className="p-4 whitespace-nowrap">نوع الحركة</th>
-                  <th className="p-4 whitespace-nowrap">رقم المرجع</th>
-                  <th className="p-4 whitespace-nowrap">البيان والملاحظات</th>
-                  <th className="p-4 whitespace-nowrap text-red-600 dark:text-red-400">مدين (+) / مسحوبات آجل</th>
-                  <th className="p-4 whitespace-nowrap text-emerald-600 dark:text-emerald-400">دائن (-) / سداد نقدي</th>
+                  <th className="p-4 whitespace-nowrap print:p-2 print:border print:border-slate-300">التاريخ</th>
+                  <th className="p-4 whitespace-nowrap print:p-2 print:border print:border-slate-300">نوع الحركة</th>
+                  <th className="p-4 whitespace-nowrap print:p-2 print:border print:border-slate-300">رقم المرجع</th>
+                  <th className="p-4 whitespace-nowrap print:p-2 print:border print:border-slate-300">البيان والملاحظات</th>
+                  <th className="p-4 whitespace-nowrap text-red-600 dark:text-red-400 print:text-black print:p-2 print:border print:border-slate-300">مدين (+) / مسحوبات آجل</th>
+                  <th className="p-4 whitespace-nowrap text-emerald-600 dark:text-emerald-400 print:text-black print:p-2 print:border print:border-slate-300">دائن (-) / سداد نقدي</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800 print:divide-slate-300">
                 {displayEvents.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="p-8 text-center text-slate-500 dark:text-slate-400 font-medium">لا توجد مسحوبات آجلة أو سندات تحصيل مسجلة لهذا العميل حتى الآن</td>
+                    <td colSpan={6} className="p-8 text-center text-slate-500 dark:text-slate-400 font-medium print:p-4 print:border">لا توجد مسحوبات آجلة أو سندات تحصيل مسجلة لهذا العميل حتى الآن</td>
                   </tr>
                 ) : (
                   displayEvents.map((row, idx) => (
-                    <tr key={idx} className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors ${row.credit > 0 ? 'bg-emerald-50/40 dark:bg-emerald-950/20' : ''}`}>
-                      <td className="p-4 text-slate-600 dark:text-slate-400 font-mono text-xs whitespace-nowrap">
+                    <tr key={idx} className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors ${row.credit > 0 ? 'bg-emerald-50/40 dark:bg-emerald-950/20' : ''} print:bg-transparent`}>
+                      <td className="p-4 text-slate-600 dark:text-slate-400 font-mono text-xs whitespace-nowrap print:p-2 print:text-black print:border print:border-slate-300">
                         {row.date.toLocaleDateString('ar-EG', { year: 'numeric', month: 'short', day: 'numeric' })}
                       </td>
-                      <td className="p-4 font-bold text-xs whitespace-nowrap">
-                        <span className={`px-2.5 py-1 rounded-lg text-xs font-bold inline-block ${row.credit > 0 ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300' : 'bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-300'}`}>
+                      <td className="p-4 font-bold text-xs whitespace-nowrap print:p-2 print:text-black print:border print:border-slate-300">
+                        <span className={`px-2.5 py-1 rounded-lg text-xs font-bold inline-block print:p-0 print:border-none ${row.credit > 0 ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300' : 'bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-300'}`}>
                           {row.type}
                         </span>
                       </td>
-                      <td className="p-4 font-mono font-bold text-slate-900 dark:text-white text-xs">{row.ref}</td>
-                      <td className="p-4 text-slate-800 dark:text-slate-200 text-xs font-medium">{row.notes}</td>
-                      <td className="p-4 font-bold text-red-600 dark:text-red-400 font-mono">
+                      <td className="p-4 font-mono font-bold text-slate-900 dark:text-white text-xs print:p-2 print:text-black print:border print:border-slate-300">{row.ref}</td>
+                      <td className="p-4 text-slate-800 dark:text-slate-200 text-xs font-medium print:p-2 print:text-black print:border print:border-slate-300">{row.notes}</td>
+                      <td className="p-4 font-bold text-red-600 dark:text-red-400 font-mono print:p-2 print:text-black print:border print:border-slate-300">
                         {row.debit > 0 ? `+${formatPriceShort(row.debit)}` : '—'}
                       </td>
-                      <td className="p-4 font-bold text-emerald-600 dark:text-emerald-400 font-mono">
+                      <td className="p-4 font-bold text-emerald-600 dark:text-emerald-400 font-mono print:p-2 print:text-black print:border print:border-slate-300">
                         {row.credit > 0 ? `-${formatPriceShort(row.credit)}` : '—'}
                       </td>
                     </tr>
@@ -382,15 +398,28 @@ export default function CustomerLedgerPage() {
             </table>
           </div>
         </div>
+
+        {/* تذييل الطباعة الرسمي */}
+        <div className="hidden print:flex justify-between items-center mt-12 pt-6 border-t border-slate-300 text-xs font-bold">
+          <div>توقيع المحاسب / المسؤول: ...........................</div>
+          <div>توقيع واستلام العميل: ...........................</div>
+        </div>
       </div>
 
       {/* نافذة تعديل الحد الائتماني */}
       {showCreditModal && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm print:hidden">
           <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-xl w-full max-w-md overflow-hidden border border-slate-300 dark:border-slate-800">
             <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-slate-50 dark:bg-slate-800/60">
               <h3 className="font-bold text-base text-slate-900 dark:text-white">تعديل الحد الائتماني وإعدادات الأجل</h3>
-              <button onClick={() => setShowCreditModal(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-white text-2xl font-bold">&times;</button>
+              <button 
+                type="button"
+                disabled={formLoading}
+                onClick={() => setShowCreditModal(false)} 
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-white text-2xl font-bold disabled:opacity-50"
+              >
+                &times;
+              </button>
             </div>
             <form onSubmit={handleUpdateCredit} className="p-5 space-y-4">
               <div>
@@ -404,15 +433,17 @@ export default function CustomerLedgerPage() {
                   required 
                   min="0"
                   step="any"
+                  disabled={formLoading}
                   value={editCreditLimit}
                   onChange={(e) => setEditCreditLimit(e.target.value)}
-                  className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-sm font-bold text-slate-900 dark:text-white font-mono focus:outline-none focus:border-emerald-500" 
+                  className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-sm font-bold text-slate-900 dark:text-white font-mono focus:outline-none focus:border-emerald-500 disabled:opacity-50" 
                 />
               </div>
               <div className="flex items-center gap-3 pt-2">
                 <input 
                   type="checkbox" 
                   id="credit_toggle"
+                  disabled={formLoading}
                   checked={editCreditEnabled}
                   onChange={(e) => setEditCreditEnabled(e.target.checked)}
                   className="w-4 h-4 text-emerald-600 rounded"
@@ -423,10 +454,17 @@ export default function CustomerLedgerPage() {
               </div>
 
               <div className="pt-3 flex gap-2">
-                <button type="submit" disabled={formLoading} className="flex-1 btn-primary py-2.5 rounded-xl font-bold text-xs shadow cursor-pointer">
-                  {formLoading ? 'جاري الحفظ...' : 'حفظ التعديلات'}
+                <button type="submit" disabled={formLoading} className="flex-1 btn-primary py-2.5 rounded-xl font-bold text-xs shadow cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2">
+                  {formLoading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>جاري الحفظ...</span>
+                    </>
+                  ) : (
+                    'حفظ التعديلات'
+                  )}
                 </button>
-                <button type="button" onClick={() => setShowCreditModal(false)} className="btn-secondary px-4 py-2.5 rounded-xl text-xs font-bold cursor-pointer">
+                <button type="button" disabled={formLoading} onClick={() => setShowCreditModal(false)} className="btn-secondary px-4 py-2.5 rounded-xl text-xs font-bold cursor-pointer disabled:opacity-50">
                   إلغاء
                 </button>
               </div>
@@ -437,14 +475,21 @@ export default function CustomerLedgerPage() {
 
       {/* نافذة تسجيل سند تحصيل نقدي */}
       {showPaymentModal && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm print:hidden">
           <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-xl w-full max-w-md overflow-hidden border border-slate-300 dark:border-slate-800">
             <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-emerald-50 dark:bg-emerald-950/60">
               <h3 className="font-bold text-base text-emerald-900 dark:text-emerald-300 flex items-center gap-2">
                 <DollarSign className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
                 تسجيل سند تحصيل نقدي (سداد مديونية)
               </h3>
-              <button onClick={() => setShowPaymentModal(false)} className="text-slate-400 hover:text-slate-600 dark:hover:text-white text-2xl font-bold">&times;</button>
+              <button 
+                type="button"
+                disabled={paymentLoading}
+                onClick={() => setShowPaymentModal(false)} 
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-white text-2xl font-bold disabled:opacity-50"
+              >
+                &times;
+              </button>
             </div>
             <form onSubmit={handleRecordPayment} className="p-5 space-y-4">
               <div>
@@ -459,8 +504,9 @@ export default function CustomerLedgerPage() {
                   required 
                   min="1"
                   step="any"
+                  disabled={paymentLoading}
                   placeholder="أدخل المبلغ..."
-                  className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-sm font-bold text-slate-900 dark:text-white font-mono focus:outline-none focus:border-emerald-500" 
+                  className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-sm font-bold text-slate-900 dark:text-white font-mono focus:outline-none focus:border-emerald-500 disabled:opacity-50" 
                 />
               </div>
               <div>
@@ -468,16 +514,24 @@ export default function CustomerLedgerPage() {
                 <textarea 
                   name="notes"
                   rows={2}
+                  disabled={paymentLoading}
                   placeholder="سداد نقدي من المندوب / تحويل بنكي / إيصال رقم..."
-                  className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-xs text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
+                  className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-xs text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500 disabled:opacity-50"
                 ></textarea>
               </div>
 
               <div className="pt-3 flex gap-2">
-                <button type="submit" disabled={paymentLoading} className="flex-1 btn-primary py-2.5 rounded-xl font-bold text-xs shadow cursor-pointer disabled:opacity-50">
-                  {paymentLoading ? 'جاري التسجيل...' : 'تأكيد السند وتحديث الرصيد'}
+                <button type="submit" disabled={paymentLoading} className="flex-1 btn-primary py-2.5 rounded-xl font-bold text-xs shadow cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2">
+                  {paymentLoading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>جاري التسجيل...</span>
+                    </>
+                  ) : (
+                    'تأكيد السند وتحديث الرصيد'
+                  )}
                 </button>
-                <button type="button" onClick={() => setShowPaymentModal(false)} className="btn-secondary px-4 py-2.5 rounded-xl text-xs font-bold cursor-pointer">
+                <button type="button" disabled={paymentLoading} onClick={() => setShowPaymentModal(false)} className="btn-secondary px-4 py-2.5 rounded-xl text-xs font-bold cursor-pointer disabled:opacity-50">
                   إلغاء
                 </button>
               </div>
@@ -485,6 +539,35 @@ export default function CustomerLedgerPage() {
           </div>
         </div>
       )}
+
+      {/* تنسيق الطباعة الصارم لإلغاء أشرطة التمرير والروابط وتنسيق الورقة */}
+      <style jsx global>{`
+        @media print {
+          @page {
+            margin: 10mm 10mm 15mm 10mm;
+            size: A4 portrait;
+          }
+          body {
+            background: white !important;
+            color: black !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+          header, nav, aside, .print\\:hidden {
+            display: none !important;
+          }
+          .overflow-x-auto {
+            overflow: visible !important;
+          }
+          table {
+            width: 100% !important;
+            border-collapse: collapse !important;
+          }
+          th, td {
+            border: 1px solid #cbd5e1 !important;
+          }
+        }
+      `}</style>
     </AdminLayout>
   );
 }

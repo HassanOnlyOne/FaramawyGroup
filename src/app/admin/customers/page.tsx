@@ -97,7 +97,7 @@ export default function CustomersPage() {
 
   const handleUpdateCustomer = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editCustomer) return;
+    if (!editCustomer || formLoading) return;
 
     setFormLoading(true);
     try {
@@ -130,7 +130,7 @@ export default function CustomersPage() {
 
   const handleRecordPayment = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!collectCustomer) return;
+    if (!collectCustomer || collectLoading) return;
 
     setCollectLoading(true);
     const formData = new FormData(e.currentTarget);
@@ -150,15 +150,17 @@ export default function CustomersPage() {
         })
       });
 
-      if (res.ok) {
+      const resData = await res.json().catch(() => ({}));
+
+      if (res.ok || resData.success) {
         toast({ title: 'تم تسجيل السند بنجاح', type: 'success' });
         setCollectCustomer(null);
         await fetchCustomers();
       } else {
-        toast({ title: 'خطأ في تسجيل التحصيل', type: 'error' });
+        toast({ title: resData.error || 'خطأ في تسجيل التحصيل', type: 'error' });
       }
     } catch (err: any) {
-      toast({ title: 'خطأ في الاتصال', description: err.message, type: 'error' });
+      toast({ title: 'خطأ في الاتصال بالسيرفر', description: err.message, type: 'error' });
     } finally {
       setCollectLoading(false);
     }
@@ -271,7 +273,6 @@ export default function CustomersPage() {
                               </span>
                             )}
                             
-                            {/* زر التحصيل الجديد بجانب زر التعديل */}
                             <button
                               onClick={() => setCollectCustomer(c)}
                               className="px-3 py-1.5 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 border border-indigo-200 dark:border-indigo-800 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
@@ -308,13 +309,20 @@ export default function CustomersPage() {
         </div>
       </div>
 
-      {/* Quick Payment Modal (نفس شاشة كشف الحساب) */}
+      {/* Quick Payment Modal */}
       {collectCustomer && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm" dir="rtl">
           <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-xl w-full max-w-md overflow-hidden border border-slate-300 dark:border-slate-800">
             <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-indigo-50 dark:bg-indigo-950/60">
               <h3 className="font-bold text-base text-indigo-900 dark:text-indigo-300">تسجيل تحصيل نقدية للعميل</h3>
-              <button onClick={() => setCollectCustomer(null)} className="text-slate-400 hover:text-slate-600 text-2xl font-bold">&times;</button>
+              <button 
+                type="button" 
+                disabled={collectLoading}
+                onClick={() => setCollectCustomer(null)} 
+                className="text-slate-400 hover:text-slate-600 text-2xl font-bold disabled:opacity-50"
+              >
+                &times;
+              </button>
             </div>
             <form onSubmit={handleRecordPayment} className="p-5 space-y-4">
               <div className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl">
@@ -329,8 +337,9 @@ export default function CustomersPage() {
                   required
                   min="1"
                   step="any"
+                  disabled={collectLoading}
                   defaultValue={Number(collectCustomer.current_debt || 0) || ''}
-                  className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-xl text-xs font-bold font-mono"
+                  className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-xl text-xs font-bold font-mono disabled:opacity-50"
                   placeholder="أدخل المبلغ..."
                 />
               </div>
@@ -339,22 +348,31 @@ export default function CustomersPage() {
                 <textarea
                   name="notes"
                   rows={2}
+                  disabled={collectLoading}
                   defaultValue="سداد نقدي لحساب الأجل"
-                  className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-xl text-xs"
+                  className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-xl text-xs disabled:opacity-50"
                 ></textarea>
               </div>
               <div className="pt-2 flex gap-2">
                 <button
                   type="submit"
                   disabled={collectLoading}
-                  className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-2.5 rounded-xl font-bold shadow text-xs cursor-pointer"
+                  className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white py-2.5 rounded-xl font-bold shadow text-xs cursor-pointer flex items-center justify-center gap-2"
                 >
-                  {collectLoading ? 'جاري التسجيل...' : 'تأكيد وحفظ التحصيل'}
+                  {collectLoading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>جاري تسجيل السند...</span>
+                    </>
+                  ) : (
+                    'تأكيد وحفظ التحصيل'
+                  )}
                 </button>
                 <button
                   type="button"
+                  disabled={collectLoading}
                   onClick={() => setCollectCustomer(null)}
-                  className="px-4 py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-bold rounded-xl border border-slate-200 dark:border-slate-700 text-xs cursor-pointer"
+                  className="px-4 py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-bold rounded-xl border border-slate-200 dark:border-slate-700 text-xs cursor-pointer disabled:opacity-50"
                 >
                   إلغاء
                 </button>
