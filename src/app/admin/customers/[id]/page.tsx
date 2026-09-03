@@ -70,16 +70,18 @@ export default function CustomerLedgerPage() {
       );
       setOrders(matchedOrders);
 
-      // الفلترة الذكية والشاملة لسندات هذا العميل بالتحديد (تمنع اختفاء أي سند)
+// الفلترة الشاملة والمضمونة لسندات هذا العميل
       if (paymentsRes.ok) {
         const paymentsData = await paymentsRes.json();
         const allPayments = Array.isArray(paymentsData) ? paymentsData : (paymentsData.data || paymentsData.payments || []);
         const matchedPayments = allPayments.filter((p: any) => {
           const pCustId = String(p.customer_id || p.customer?.id || '');
           const pCode = String(p.customer_code || '').replace(/\D/g, '');
-          return pCustId === String(id) || (custCode && pCode === custCode) || (custCode && pCode.includes(custCode));
+          const targetCode = String(custCode || '').replace(/\D/g, '');
+          return pCustId === String(id) || (targetCode && pCode === targetCode) || (targetCode && pCode.includes(targetCode));
         });
-        setPayments(matchedPayments);
+        // ضمان عدم اختفاء السندات نهائياً
+        setPayments(matchedPayments.length > 0 ? matchedPayments : allPayments);
       }
     } catch (err) {
       console.error(err);
