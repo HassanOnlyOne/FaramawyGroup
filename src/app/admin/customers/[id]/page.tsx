@@ -7,7 +7,7 @@ import { AdminLayout } from '@/components/layout/admin-layout';
 import { useToast } from '@/components/ui/toast';
 import { ArrowRight, DollarSign, Printer, Loader2, Phone, FileText } from 'lucide-react';
 import { useNumberFormat } from '@/context/number-format-context';
-import { BRAND } from '@/lib/constants';
+import { createClient } from '@/lib/supabase/client';
 
 export default function CustomerLedgerPage() {
   const { id } = useParams();
@@ -30,26 +30,16 @@ export default function CustomerLedgerPage() {
   }, [id]);
 
   async function fetchCustomerData() {
+    setLoading(true);
     try {
-      // سحب داتا العميل والفواتير والسندات من الـ APIs المعتمدة
-      const [custRes, ordersRes, paymentsRes] = await Promise.all([
-        fetch(`/api/admin/customers/${id}?t=${Date.now()}`),
-        fetch(`/api/orders?limit=200&t=${Date.now()}`),
-        fetch(`/api/payments?t=${Date.now()}`)
-      ]);
+      const supabase = createClient();
 
-      let prof: any = null;
-      if (custRes.ok) {
-        const custData = await custRes.json();
-        prof = custData.data || custData.profile;
-      }
-      if (!prof) {
-        const fbRes = await fetch(`/api/customers/${id}?t=${Date.now()}`);
-        if (fbRes.ok) {
-          const fbData = await fbRes.json();
-          prof = fbData.data || fbData.profile;
-        }
-      }
+      // 1. جلب بيانات بروفايل العميل مباشرة من Supabase لضمان دقة المعرف
+      const { data: prof } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
 
       if (prof) {
         setCustomer(prof);
@@ -58,33 +48,53 @@ export default function CustomerLedgerPage() {
         setEditCreditEnabled(enabled);
       }
 
-      let allOrders: any[] = [];
-      if (ordersRes.ok) {
-        const ordersData = await ordersRes.json();
-        allOrders = Array.isArray(ordersData) ? ordersData : (ordersData.data || ordersData.orders || []);
+      const custCode = prof?.customer_code ? String(prof.customer_code).replace(/\D/g, '') : '';
+
+      // 2. جلب طلبات العميل بنفس منطق صفحة العميل المباشرة
+      let orderQuery = supabase.from('orders').select('*');
+      if (custCode) {
+        orderQuery = orderQuery.or(`customer_id.eq.${id},customer_code.eq.${custCode},store_code.eq.${custCode}`);
+      } else {
+        orderQuery = orderQuery.eq('customer_id', id);
       }
+      const { data: fetchedOrders } = await orderQuery.order('created_at', { ascending: false });
+      setOrders(fetchedOrders || []);
 
-      const custCode = prof ? String(prof.customer_code || '').replace(/\D/g, '') : '';
-      const matchedOrders = allOrders.filter((o: any) => 
-        String(o.customer_id) === String(id) ||
-        String(o.customer?.id) === String(id) ||
-        (custCode && (String(o.customer_code) === custCode || String(o.store_code) === custCode))
-      );
-      setOrders(matchedOrders);
+      // 3. جلب السندات من customer_payments أولاً، ثم الرجوع لـ payments القديم إن لزم
+      const { data: payList } = await supabase
+        .from('customer_payments')
+        .select('*')
+        .eq('customer_id', id)
+        .order('created_at', { ascending: false });
 
-      // جلب السندات الشاملة المرتبطة بالعميل
-      if (paymentsRes.ok) {
-        const paymentsData = await paymentsRes.json();
-        const allPayments = Array.isArray(paymentsData) ? paymentsData : (paymentsData.data || paymentsData.payments || []);
-        const matchedPayments = allPayments.filter((p: any) => {
-          const pCustId = String(p.customer_id || p.customer?.id || '');
-          const pCode = String(p.customer_code || '').replace(/\D/g, '');
-          return pCustId === String(id) || (custCode && (pCode === custCode || pCode.includes(custCode)));
-        });
-        setPayments(matchedPayments.length > 0 ? matchedPayments : allPayments);
+      if (payList && payList.length > 0) {
+        setPayments(payList);
+      } else {
+        const { data: oldPays } = await supabase
+          .from('payments')
+          .select('*')
+          .eq('customer_id', id)
+          .order('created_at', { ascending: false });
+
+        if (oldPays && oldPays.length > 0) {
+          setPayments(oldPays);
+        } else {
+          // جلب شامل بحسب كود العميل كخيار أخير في حال غياب ربط الـ UUID
+          const { data: allFallbackPays } = await supabase
+            .from('customer_payments')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .limit(50);
+
+          const matchedFallback = (allFallbackPays || []).filter((p: any) => {
+            const pCode = String(p.customer_code || '').replace(/\D/g, '');
+            return custCode && pCode === custCode;
+          });
+          setPayments(matchedFallback.length > 0 ? matchedFallback : (allFallbackPays || []));
+        }
       }
     } catch (err) {
-      console.error(err);
+      console.error('Error fetching admin ledger:', err);
     } finally {
       setLoading(false);
     }
@@ -94,16 +104,17 @@ export default function CustomerLedgerPage() {
     e.preventDefault();
     setFormLoading(true);
     try {
-      const res = await fetch(`/api/admin/customers/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const supabase = createClient();
+      const { error } = await supabase
+        .from('profiles')
+        .update({
           credit_limit: Number(editCreditLimit || 0),
           is_credit_enabled: Boolean(editCreditEnabled),
           credit_enabled: Boolean(editCreditEnabled)
         })
-      });
-      if (res.ok) {
+        .eq('id', id);
+
+      if (!error) {
         toast({ title: 'تم تحديث الحد الائتماني بنجاح', type: 'success' });
         setShowCreditModal(false);
         fetchCustomerData();
@@ -126,27 +137,44 @@ export default function CustomerLedgerPage() {
     const amountVal = parseFloat(formData.get('amount') as string);
     const notesVal = (formData.get('notes') as string) || 'سداد نقدية لحساب الأجل';
     const custCode = customer?.customer_code ? String(customer.customer_code).replace(/\D/g, '') : '1004';
-    
+
     try {
-      const res = await fetch('/api/payments', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const supabase = createClient();
+      const { error } = await supabase
+        .from('customer_payments')
+        .insert({
           customer_id: id,
-          customer_code: custCode,
           amount: amountVal,
           payment_method: 'cash',
-          notes: notesVal,
-          user_name: 'المدير العام'
-        })
-      });
-      
-      if (res.ok) {
+          notes: notesVal
+        });
+
+      if (!error) {
         toast({ title: 'تم تسجيل تحصيل النقدية وتحديث المديونية بنجاح', type: 'success' });
         setShowPaymentModal(false);
         await fetchCustomerData();
       } else {
-        toast({ title: 'خطأ في تسجيل التحصيل', type: 'error' });
+        // تجربة مسار API في حال وجود قيود صلاحيات مباشرة
+        const res = await fetch('/api/payments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            customer_id: id,
+            customer_code: custCode,
+            amount: amountVal,
+            payment_method: 'cash',
+            notes: notesVal,
+            user_name: 'المدير العام'
+          })
+        });
+
+        if (res.ok) {
+          toast({ title: 'تم تسجيل تحصيل النقدية وتحديث المديونية بنجاح', type: 'success' });
+          setShowPaymentModal(false);
+          await fetchCustomerData();
+        } else {
+          toast({ title: 'خطأ في تسجيل التحصيل', type: 'error' });
+        }
       }
     } catch (err) {
       toast({ title: 'خطأ في الاتصال', type: 'error' });
@@ -180,61 +208,74 @@ export default function CustomerLedgerPage() {
 
   const custCodeClean = customer.customer_code ? String(customer.customer_code).replace(/\D/g, '') : (customer.id ? String(customer.id).slice(-4) : '1004');
 
-  // بناء أحداث كشف الحساب
+  // استبعاد الفواتير الملغاة والمعلقة والمستردة بنفس آلية صفحة العميل
+  const creditWithdrawals = orders.filter((o: any) => {
+    if (['pending', 'cancelled', 'returned'].includes(o.status)) return false;
+    const isCredit = o.payment_method === 'credit';
+    const tot = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
+    const paid = Number(o.paid_amount || 0);
+    const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, tot - paid) : 0));
+    return isCredit || rem > 0;
+  });
+
   const statementEvents: any[] = [];
 
-  orders.forEach(o => {
-    if (o.status === 'pending' || o.status === 'cancelled' || o.status === 'returned') return;
-    const isCredit = o.payment_method === 'credit';
-    const total = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
+  creditWithdrawals.forEach((o: any) => {
+    const tot = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
     const paid = Number(o.paid_amount || 0);
-    const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, total - paid) : 0));
-    
-    if (!isCredit && rem <= 0) return;
+    const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : Math.max(0, tot - paid));
+    const debitAmount = rem > 0 ? rem : tot;
 
     const invNo = o.invoice_no || o.order_number || String(o.id).slice(0, 8);
     const cleanInv = String(invNo).replace(/\D/g, '') || invNo;
-    const debitAmount = rem > 0 ? rem : total;
 
     statementEvents.push({
       date: new Date(o.created_at),
       type: 'فاتورة توريد (آجل)',
       ref: `فاتورة #${formatNumber(cleanInv)}`,
-      notes: paid > 0 ? `إجمالي الفاتورة ${formatPriceShort(total)} (مسدد كاش ${formatPriceShort(paid)})` : `فاتورة توريد بضاعة لحساب الأجل`,
+      notes: paid > 0 ? `إجمالي الفاتورة ${formatPriceShort(tot)} (مسدد كاش ${formatPriceShort(paid)})` : `فاتورة توريد بضاعة لحساب الأجل`,
       debit: debitAmount,
-      credit: 0,
+      credit: 0
     });
   });
 
-  payments.forEach(p => {
+  payments.forEach((p: any) => {
     const val = Number(p.amount || 0);
     const payId = String(p.id).replace(/\D/g, '').slice(0, 6) || '1';
+
     statementEvents.push({
       date: new Date(p.created_at || p.payment_date),
       type: 'سند تحصيل نقدي',
       ref: `سند تحصيل #${formatNumber(payId)}`,
       notes: p.notes || 'سداد نقدية لحساب الأجل',
       debit: 0,
-      credit: val,
+      credit: val
     });
   });
 
-  statementEvents.sort((a, b) => b.date.getTime() - a.date.getTime());
+  // ترتيب زمني تصاعدي لحساب الرصيد التراكمي المطابق لصفحة العميل
+  statementEvents.sort((a, b) => a.date.getTime() - b.date.getTime());
 
-  // الحساب الديناميكي الصحيح: إجمالي المدين ناقص إجمالي الدائن (السندات) ليتطابق تماماً مع واجهة العملاء (1,311)
-  const totalDebit = statementEvents.reduce((acc, ev) => acc + (ev.debit || 0), 0);
-  const totalCredit = statementEvents.reduce((acc, ev) => acc + (ev.credit || 0), 0);
-  
-  const finalUnifiedDebt = Math.max(0, totalDebit - totalCredit);
+  let runningBalance = 0;
+  statementEvents.forEach(ev => {
+    runningBalance += (ev.debit - ev.credit);
+  });
+
+  const finalUnifiedDebt = statementEvents.length > 0 
+    ? Math.max(0, runningBalance) 
+    : Number(customer.current_debt !== undefined && customer.current_debt !== null ? customer.current_debt : (customer.previous_balance || 0));
 
   const creditLimit = Number(customer.credit_limit || 0);
   const availableCredit = Math.max(0, creditLimit - finalUnifiedDebt);
+
+  // إعادة الترتيب للعرض التنازلي في الجدول (الأحدث أولاً)
+  const displayEvents = [...statementEvents].sort((a, b) => b.date.getTime() - a.date.getTime());
 
   return (
     <AdminLayout>
       <div className="space-y-6">
         
-        {/* Top Header Card (Screen Only) */}
+        {/* شريط الإجراءات والترويسة */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm print:hidden">
           <div className="flex items-center gap-4">
             <Link href="/admin/customers" className="p-2 bg-slate-100 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 hover:bg-slate-200 text-slate-700 dark:text-slate-300">
@@ -270,7 +311,7 @@ export default function CustomerLedgerPage() {
           </div>
         </div>
 
-        {/* Financial Cards Summary */}
+        {/* بطاقات المؤشرات المالية */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
           <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm">
             <span className="text-xs font-bold text-slate-500 dark:text-slate-400 block mb-1">إجمالي المديونية المتبقية المستحقة</span>
@@ -289,14 +330,14 @@ export default function CustomerLedgerPage() {
           </div>
         </div>
 
-        {/* Detailed Statement Table */}
+        {/* جدول كشف الحساب الموحد */}
         <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden">
           <div className="p-5 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 flex justify-between items-center">
             <h2 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
               <FileText className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
               <span>كشف حساب تفصيلي للمسحوبات الآجلة والتحصيلات</span>
             </h2>
-            <span className="text-xs font-bold text-slate-500 dark:text-slate-400">عدد الحركات: {formatNumber(statementEvents.length)}</span>
+            <span className="text-xs font-bold text-slate-500 dark:text-slate-400">عدد الحركات: {formatNumber(displayEvents.length)}</span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-right text-sm">
@@ -311,12 +352,12 @@ export default function CustomerLedgerPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                {statementEvents.length === 0 ? (
+                {displayEvents.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="p-8 text-center text-slate-500 dark:text-slate-400 font-medium">لا توجد مسحوبات آجلة أو سندات تحصيل مسجلة لهذا العميل حتى الآن</td>
                   </tr>
                 ) : (
-                  statementEvents.map((row, idx) => (
+                  displayEvents.map((row, idx) => (
                     <tr key={idx} className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors ${row.credit > 0 ? 'bg-emerald-50/40 dark:bg-emerald-950/20' : ''}`}>
                       <td className="p-4 text-slate-600 dark:text-slate-400 font-mono text-xs whitespace-nowrap">
                         {row.date.toLocaleDateString('ar-EG', { year: 'numeric', month: 'short', day: 'numeric' })}
@@ -343,7 +384,7 @@ export default function CustomerLedgerPage() {
         </div>
       </div>
 
-      {/* Credit Settings Modal */}
+      {/* نافذة تعديل الحد الائتماني */}
       {showCreditModal && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-xl w-full max-w-md overflow-hidden border border-slate-300 dark:border-slate-800">
@@ -394,7 +435,7 @@ export default function CustomerLedgerPage() {
         </div>
       )}
 
-      {/* Payment Recording Modal */}
+      {/* نافذة تسجيل سند تحصيل نقدي */}
       {showPaymentModal && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
           <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-xl w-full max-w-md overflow-hidden border border-slate-300 dark:border-slate-800">
