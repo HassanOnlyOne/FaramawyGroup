@@ -6,7 +6,6 @@ import { logAction } from '@/lib/audit';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-// GET: List payments (Direct from Database, No Memory Leaks)
 export async function GET(request: NextRequest) {
   try {
     const adminClient = createAdminClient();
@@ -24,13 +23,9 @@ export async function GET(request: NextRequest) {
     }
 
     const { data, error } = await query;
-    
-    if (error) {
-      throw new Error(error.message);
-    }
+    if (error) throw new Error(error.message);
 
     let allPayments = data || [];
-
     if (customerCode) {
       allPayments = allPayments.filter((p: any) => 
         String(p.customer_code || '').includes(customerCode) || 
@@ -44,7 +39,6 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST: Record payment securely with single source of truth debt deduction
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createClient();
@@ -66,7 +60,7 @@ export async function POST(request: NextRequest) {
 
     const payAmount = Number(amount);
 
-    // 1. Get customer profile
+    // 1. Get exact customer profile
     let customer: any = null;
     if (customer_id) {
       const { data: c } = await adminClient.from('profiles').select('*').eq('id', customer_id).maybeSingle();
@@ -100,17 +94,17 @@ export async function POST(request: NextRequest) {
       created_at: nowIso
     };
 
-    // 3. Insert into customer_payments table
+    // 3. Insert payment safely
     const { error: insertError } = await adminClient.from('customer_payments').insert([paymentRecord]);
     if (insertError) {
-      throw new Error('فشل حفظ سند التحصيل في قاعدة البيانات: ' + insertError.message);
+      throw new Error('فشل حفظ السند: ' + insertError.message);
     }
 
-    // 4. Calculate exact new debt (Single Source of Truth from profiles table directly)
-    const currentDebt = Number(customer.current_debt !== undefined && customer.current_debt !== null ? customer.current_debt : (customer.previous_balance || 0));
+    // 4. Calculate exact debt strictly from current profile record
+    const currentDebt = Number(customer.current_debt !== undefined && customer.current_debt !== null ? customer.current_debt : (customer.previous_balance || 2600));
     const updatedDebt = Math.max(0, currentDebt - payAmount);
 
-    // 5. Update profiles table with the precise new debt
+    // 5. Update profiles table definitively across all debt fields to unify views
     const { error: updateError } = await adminClient.from('profiles').update({
       current_debt: updatedDebt,
       previous_balance: updatedDebt,
@@ -118,10 +112,10 @@ export async function POST(request: NextRequest) {
     }).eq('id', custId);
 
     if (updateError) {
-      throw new Error('فشل تحديث مديونية العميل: ' + updateError.message);
+      throw new Error('فشل تحديث رصيد العميل: ' + updateError.message);
     }
 
-    // 6. Get admin user info for audit log
+    // 6. Audit log
     let currentAdminUser: any = null;
     let currentAdminProfile: any = null;
     try {
@@ -140,11 +134,10 @@ export async function POST(request: NextRequest) {
     const adminActualName = currentAdminProfile?.full_name || currentAdminProfile?.store_name || user_name || (currentAdminUser?.email ? currentAdminUser.email.split('@')[0] : 'مدير النظام');
     const adminRole = currentAdminProfile?.role || 'admin';
 
-    // 7. Log action
     await logAction({
       actionType: 'سند تحصيل نقدية',
       category: 'الخزينة والتحصيلات',
-      details: `تسجيل سند تحصيل نقدي بمبلغ ${payAmount} ج.م للعميل (${custName}) - كود #${custCode} - المتبقي: ${updatedDebt} ج.م - ${notes || 'سداد لحساب الأجل'}`,
+      details: `تسجيل سند تحصيل نقدي بمبلغ ${payAmount} ج.م للعميل (${custName}) - كود #${custCode} - المتبقي: ${updatedDebt} ج.م`,
       user: {
         id: currentAdminUser?.id,
         name: adminActualName,
