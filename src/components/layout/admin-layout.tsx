@@ -63,7 +63,6 @@ const NAV_GROUPS = [
   {
     title: '💰 الإدارة المالية والخزينة',
     items: [
-      { href: '/admin/payments', label: 'التحصيلات النقدية', icon: Banknote },
       { href: '/admin/treasury', label: 'حركة الخزينة والسيولة', icon: CreditCard },
       { href: '/admin/expenses', label: 'المصروفات التشغيلية', icon: CreditCard },
     ]

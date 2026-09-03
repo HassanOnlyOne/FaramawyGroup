@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { AdminLayout } from '@/components/layout/admin-layout';
 import { useToast } from '@/components/ui/toast';
 import { useNumberFormat } from '@/context/number-format-context';
-import { Users, Search, ShieldCheck, Phone, Edit, Eye, EyeOff, Key, Loader2 } from 'lucide-react';
+import { Users, Search, ShieldCheck, Phone, Edit, Eye, EyeOff, Key, Loader2, DollarSign } from 'lucide-react';
 
 export default function CustomersPage() {
   const { toast } = useToast();
@@ -14,7 +14,9 @@ export default function CustomersPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [editCustomer, setEditCustomer] = useState<any>(null);
+  const [collectCustomer, setCollectCustomer] = useState<any>(null);
   const [formLoading, setFormLoading] = useState(false);
+  const [collectLoading, setCollectLoading] = useState(false);
 
   // Password reset state
   const [newCustomerPassword, setNewCustomerPassword] = useState('');
@@ -67,62 +69,15 @@ export default function CustomersPage() {
 
   async function fetchCustomers() {
     try {
-      const [custRes, ordRes, payRes] = await Promise.all([
-        fetch(`/api/customers?t=${Date.now()}`),
-        fetch(`/api/orders?limit=200&t=${Date.now()}`),
-        fetch(`/api/payments?t=${Date.now()}`)
-      ]);
-
-      let ordList: any[] = [];
-      if (ordRes.ok) {
-        const ordJson = await ordRes.json();
-        ordList = Array.isArray(ordJson) ? ordJson : (ordJson.data || ordJson.orders || []);
-      }
-
-      let payList: any[] = [];
-      if (payRes.ok) {
-        const payJson = await payRes.json();
-        payList = Array.isArray(payJson) ? payJson : (payJson.data || payJson.payments || []);
-      }
+      const custRes = await fetch(`/api/customers?t=${Date.now()}`);
 
       if (custRes.ok) {
         const json = await custRes.json();
         const rawCusts = json.data || json.customers || [];
         
-        // Calculate dynamic live debt per customer (Gross Credit Invoices - Total Payments)
         const enriched = rawCusts.map((c: any) => {
-          const custCode = String(c.customer_code || '').replace(/\D/g, '');
-          const customerOrders = ordList.filter((o: any) => 
-            (o.customer_id && o.customer_id === c.id) ||
-            (o.customer?.id && o.customer?.id === c.id) ||
-            (custCode === '1004' && (o.customer_code === '1004' || o.customer_code === '1000' || o.store_name_ref?.includes('عمر'))) ||
-            (custCode === '1000' && (o.customer_code === '1000' || !o.customer_id || o.store_name_ref?.includes('عمر')))
-          );
-
-          const customerPayments = payList.filter((p: any) =>
-            (p.customer_id && p.customer_id === c.id) ||
-            (p.customer?.id && p.customer?.id === c.id) ||
-            (custCode && (String(p.customer_code || '').includes(custCode) || String(p.customer?.customer_code || '').includes(custCode))) ||
-            (custCode === '1004' && (String(p.customer_code || '').includes('1004') || String(p.customer_code || '').includes('1000')))
-          );
-
-          const totalPaidReceipts = customerPayments.reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
-
-          const liveOrderDebt = customerOrders
-            .filter((o: any) => !['pending', 'cancelled', 'returned'].includes(o.status))
-            .reduce((sum: number, o: any) => {
-              const isCredit = o.payment_method === 'credit';
-              const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
-              const ordPaid = Number(o.paid_amount || 0);
-              const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, ordTotal - ordPaid) : 0));
-              if (!isCredit && rem <= 0) return sum;
-              return sum + rem;
-            }, 0);
-
           const directProfileDebt = Number(c.current_debt !== undefined && c.current_debt !== null ? c.current_debt : (c.previous_balance || 0));
-          const finalDebt = liveOrderDebt > 0 
-            ? Math.max(0, liveOrderDebt - totalPaidReceipts) 
-            : directProfileDebt;
+          const finalDebt = directProfileDebt; 
 
           return {
             ...c,
@@ -170,6 +125,42 @@ export default function CustomersPage() {
       toast({ title: 'خطأ في الاتصال', description: err.message, type: 'error' });
     } finally {
       setFormLoading(false);
+    }
+  };
+
+  const handleRecordPayment = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!collectCustomer) return;
+
+    setCollectLoading(true);
+    const formData = new FormData(e.currentTarget);
+    const amountVal = parseFloat(formData.get('amount') as string);
+    const notesVal = (formData.get('notes') as string) || 'سداد نقدي لحساب الأجل';
+
+    try {
+      const res = await fetch('/api/payments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_id: collectCustomer.id,
+          customer_code: collectCustomer.customer_code,
+          amount: amountVal,
+          payment_method: 'cash',
+          notes: notesVal
+        })
+      });
+
+      if (res.ok) {
+        toast({ title: 'تم تسجيل السند بنجاح', type: 'success' });
+        setCollectCustomer(null);
+        await fetchCustomers();
+      } else {
+        toast({ title: 'خطأ في تسجيل التحصيل', type: 'error' });
+      }
+    } catch (err: any) {
+      toast({ title: 'خطأ في الاتصال', description: err.message, type: 'error' });
+    } finally {
+      setCollectLoading(false);
     }
   };
 
@@ -279,6 +270,17 @@ export default function CustomersPage() {
                                 ✕ الآجل معطّل
                               </span>
                             )}
+                            
+                            {/* زر التحصيل الجديد بجانب زر التعديل */}
+                            <button
+                              onClick={() => setCollectCustomer(c)}
+                              className="px-3 py-1.5 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 border border-indigo-200 dark:border-indigo-800 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                              title="تسجيل تحصيل نقدي"
+                            >
+                              <DollarSign className="w-3.5 h-3.5" />
+                              <span>تحصيل</span>
+                            </button>
+
                             <button
                               onClick={() => setEditCustomer({ ...c })}
                               className="px-3 py-1.5 bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/40 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors"
@@ -305,6 +307,62 @@ export default function CustomersPage() {
           </div>
         </div>
       </div>
+
+      {/* Quick Payment Modal (نفس شاشة كشف الحساب) */}
+      {collectCustomer && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm" dir="rtl">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-xl w-full max-w-md overflow-hidden border border-slate-300 dark:border-slate-800">
+            <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-indigo-50 dark:bg-indigo-950/60">
+              <h3 className="font-bold text-base text-indigo-900 dark:text-indigo-300">تسجيل تحصيل نقدية للعميل</h3>
+              <button onClick={() => setCollectCustomer(null)} className="text-slate-400 hover:text-slate-600 text-2xl font-bold">&times;</button>
+            </div>
+            <form onSubmit={handleRecordPayment} className="p-5 space-y-4">
+              <div className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl">
+                <p className="font-bold text-slate-900 dark:text-white text-sm">{collectCustomer.store_name || collectCustomer.full_name}</p>
+                <p className="text-xs text-slate-500 mt-1">المديونية الحالية: <span className="font-bold text-red-600 font-mono">{formatPriceShort(Number(collectCustomer.current_debt || 0))}</span></p>
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">المبلغ المحصل (ج.م) *</label>
+                <input
+                  type="number"
+                  name="amount"
+                  required
+                  min="1"
+                  step="any"
+                  defaultValue={Number(collectCustomer.current_debt || 0) || ''}
+                  className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-xl text-xs font-bold font-mono"
+                  placeholder="أدخل المبلغ..."
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">ملاحظات أو تفاصيل السند</label>
+                <textarea
+                  name="notes"
+                  rows={2}
+                  defaultValue="سداد نقدي لحساب الأجل"
+                  className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white rounded-xl text-xs"
+                ></textarea>
+              </div>
+              <div className="pt-2 flex gap-2">
+                <button
+                  type="submit"
+                  disabled={collectLoading}
+                  className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-2.5 rounded-xl font-bold shadow text-xs cursor-pointer"
+                >
+                  {collectLoading ? 'جاري التسجيل...' : 'تأكيد وحفظ التحصيل'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCollectCustomer(null)}
+                  className="px-4 py-2.5 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-bold rounded-xl border border-slate-200 dark:border-slate-700 text-xs cursor-pointer"
+                >
+                  إلغاء
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Edit Customer Modal */}
       {editCustomer && (
@@ -411,9 +469,6 @@ export default function CustomersPage() {
                     <span>تحديث كلمة المرور</span>
                   </button>
                 </div>
-                <span className="text-[10px] text-slate-400 block">
-                  يمكن للمشرف تعيين كلمة مرور جديدة للتاجر وتزويده بها مباشرة
-                </span>
               </div>
 
               <div className="pt-2 flex gap-2">
