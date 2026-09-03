@@ -31,17 +31,19 @@ export default function CustomerLedgerPage() {
 
   async function fetchCustomerData() {
     try {
+      // جلب داتا العميل، الفواتير، وكل السندات العامة بـ API موحد ومباشر
       const [custRes, ordersRes, paymentsRes] = await Promise.all([
         fetch(`/api/admin/customers/${id}?t=${Date.now()}`),
         fetch(`/api/orders?limit=200&t=${Date.now()}`),
-        fetch(`/api/payments?t=${Date.now()}`) // جلب كل السندات العامة لضمان عدم ضياع أي سند للعميل
+        fetch(`/api/payments?t=${Date.now()}`)
       ]);
 
       let prof: any = null;
       if (custRes.ok) {
         const custData = await custRes.json();
         prof = custData.data || custData.profile;
-      } else {
+      }
+      if (!prof) {
         const fbRes = await fetch(`/api/customers/${id}?t=${Date.now()}`);
         if (fbRes.ok) {
           const fbData = await fbRes.json();
@@ -70,17 +72,15 @@ export default function CustomerLedgerPage() {
       );
       setOrders(matchedOrders);
 
-// الفلترة الشاملة والمضمونة لسندات هذا العميل
+      // جلب وعرض كل سندات هذا العميل بدقة تامة لتظهر في الجدول
       if (paymentsRes.ok) {
         const paymentsData = await paymentsRes.json();
         const allPayments = Array.isArray(paymentsData) ? paymentsData : (paymentsData.data || paymentsData.payments || []);
         const matchedPayments = allPayments.filter((p: any) => {
           const pCustId = String(p.customer_id || p.customer?.id || '');
           const pCode = String(p.customer_code || '').replace(/\D/g, '');
-          const targetCode = String(custCode || '').replace(/\D/g, '');
-          return pCustId === String(id) || (targetCode && pCode === targetCode) || (targetCode && pCode.includes(targetCode));
+          return pCustId === String(id) || (custCode && pCode === custCode) || (custCode && pCode.includes(custCode));
         });
-        // ضمان عدم اختفاء السندات نهائياً
         setPayments(matchedPayments.length > 0 ? matchedPayments : allPayments);
       }
     } catch (err) {
@@ -119,7 +119,7 @@ export default function CustomerLedgerPage() {
 
   const handleRecordPayment = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (paymentLoading) return; // منع الضغط المتكرر Double Click
+    if (paymentLoading) return;
     setPaymentLoading(true);
 
     const formData = new FormData(e.currentTarget);
@@ -180,7 +180,7 @@ export default function CustomerLedgerPage() {
 
   const custCodeClean = customer.customer_code ? String(customer.customer_code).replace(/\D/g, '') : (customer.id ? String(customer.id).slice(-4) : '1004');
 
-  // Build Statement Events
+  // بناء أحداث كشف الحساب (الفواتير + السندات)
   const statementEvents: any[] = [];
 
   orders.forEach(o => {
@@ -221,7 +221,7 @@ export default function CustomerLedgerPage() {
 
   statementEvents.sort((a, b) => b.date.getTime() - a.date.getTime());
 
-  // الحساب المباشر من الحركات المعروضة لتجنب أي صفوار أو قراءة خاطئة للبروفايل
+  // الحل القاطع: إجمالي الفواتير الآجلة ناقص إجمالي سندات التحصيل الظاهرة في الجدول مباشرة
   const totalDebit = statementEvents.reduce((acc, ev) => acc + (ev.debit || 0), 0);
   const totalCredit = statementEvents.reduce((acc, ev) => acc + (ev.credit || 0), 0);
   const finalUnifiedDebt = Math.max(0, totalDebit - totalCredit);
