@@ -69,16 +69,14 @@ export default function CustomerLedgerPage() {
       );
       setOrders(matchedOrders);
 
-      // جلب السندات بلا قيود معقدة لتجنب اختفائها
       if (paymentsRes.ok) {
         const paymentsData = await paymentsRes.json();
         const allPayments = Array.isArray(paymentsData) ? paymentsData : (paymentsData.data || paymentsData.payments || []);
-        // جلب كل سندات هذا العميل بغض النظر عن تفاوت الأكواد
         const matchedPayments = allPayments.filter((p: any) => 
           String(p.customer_id) === String(id) ||
           String(p.customer?.id) === String(id) ||
           (custCode && (String(p.customer_code || '').includes(custCode) || String(p.customer?.customer_code || '').includes(custCode))) ||
-          !p.customer_id // fallback في حال عدم مطابقة الـ id حرفياً
+          !p.customer_id
         );
         setPayments(matchedPayments.length > 0 ? matchedPayments : allPayments);
       }
@@ -177,9 +175,6 @@ export default function CustomerLedgerPage() {
 
   const custCodeClean = customer.customer_code ? String(customer.customer_code).replace(/\D/g, '') : (customer.id ? String(customer.id).slice(-4) : '1004');
 
-  // الربط المباشر بقاعدة البيانات كمرجع أساسي لا يقبل الخطأ
-  const finalUnifiedDebt = Number(customer.current_debt !== undefined && customer.current_debt !== null ? customer.current_debt : (customer.previous_balance || 2400));
-
   // Build Statement Events
   const statementEvents: any[] = [];
 
@@ -220,6 +215,11 @@ export default function CustomerLedgerPage() {
   });
 
   statementEvents.sort((a, b) => b.date.getTime() - a.date.getTime());
+
+  // الحل الجذري: الحساب المباشر الدقيق (إجمالي المدين ناقص إجمالي الدائن من الحركات الفعلية الظاهرة)
+  const totalDebit = statementEvents.reduce((acc, ev) => acc + ev.debit, 0);
+  const totalCredit = statementEvents.reduce((acc, ev) => acc + ev.credit, 0);
+  const finalUnifiedDebt = Math.max(0, totalDebit - totalCredit);
 
   const creditLimit = Number(customer.credit_limit || 0);
   const availableCredit = Math.max(0, creditLimit - finalUnifiedDebt);
@@ -428,7 +428,7 @@ export default function CustomerLedgerPage() {
 
               <div className="pt-3 flex gap-2">
                 <button type="submit" disabled={formLoading} className="flex-1 btn-primary py-2.5 rounded-xl font-bold text-xs shadow cursor-pointer">
-                  {formLoading ? 'جاري الحفظ...' : 'تأكيد السند وتحديث الرصيد'}
+                  {formLoading ? 'جاري التسجيل...' : 'تأكيد السند وتحديث الرصيد'}
                 </button>
                 <button type="button" onClick={() => setShowPaymentModal(false)} className="btn-secondary px-4 py-2.5 rounded-xl text-xs font-bold cursor-pointer">
                   إلغاء
