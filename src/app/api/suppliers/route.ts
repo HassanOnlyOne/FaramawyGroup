@@ -16,15 +16,24 @@ export async function GET(req: NextRequest) {
       suppliers = fb.data || [];
     }
 
-    // Fetch all purchases to aggregate supplier debts
     const { data: allPurchases } = await adminClient
       .from('purchases')
       .select('supplier_id, total, total_amount, paid_amount, remaining_amount');
 
+    let allSupPayments: any[] = [];
+    try {
+      const { data: payData } = await adminClient.from('supplier_payments').select('supplier_id, amount');
+      if (payData) allSupPayments = payData;
+    } catch {}
+
     const purchasesList = Array.isArray(allPurchases) ? allPurchases : [];
+    const paymentsList = Array.isArray(allSupPayments) ? allSupPayments : [];
 
     const formattedSuppliers = (suppliers || []).map((sup: any) => {
       const supPurchases = purchasesList.filter((p: any) => p.supplier_id === sup.id);
+      const supPayments = paymentsList.filter((pay: any) => pay.supplier_id === sup.id);
+
+      const opening = Number(sup.opening_balance ?? sup.initial_balance ?? 0);
       const purchasesDebt = supPurchases.reduce((sum: number, p: any) => {
         const tot = Number(p.total !== undefined && p.total !== null ? p.total : (p.total_amount || 0));
         const pd = Number(p.paid_amount || 0);
@@ -32,7 +41,10 @@ export async function GET(req: NextRequest) {
         return sum + rem;
       }, 0);
 
-      const finalDebt = Math.max(purchasesDebt, Number(sup.current_balance ?? sup.balance ?? 0));
+      const totalPaid = supPayments.reduce((sum: number, pay: any) => sum + Number(pay.amount || 0), 0);
+
+      // الجمع التراكمي المحاسبي السليم: رصيد أول المدة + فواتير المشتريات الآجلة - السدادات
+      const finalDebt = Math.max(0, (opening + purchasesDebt) - totalPaid);
 
       return {
         ...sup,
@@ -40,8 +52,8 @@ export async function GET(req: NextRequest) {
         company_name: sup.company_name || sup.company || '',
         balance: finalDebt,
         current_balance: finalDebt,
-        opening_balance: Number(sup.opening_balance ?? sup.initial_balance ?? finalDebt),
-        initial_balance: Number(sup.initial_balance ?? sup.opening_balance ?? finalDebt),
+        opening_balance: opening,
+        initial_balance: opening,
         current_debt: finalDebt,
         purchases_count: supPurchases.length
       };

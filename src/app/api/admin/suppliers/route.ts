@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
     const supplierId = searchParams.get('id');
     const returnPaymentsOnly = searchParams.get('payments') === 'true';
 
-    // 1. If requesting all supplier payments (e.g. for Treasury)
+    // 1. طلب سجل السدادات العامة
     if (returnPaymentsOnly) {
       let payments: any[] = [];
       try {
@@ -37,7 +37,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ success: true, data: payments, payments });
     }
 
-    // 2. If requesting detailed statement for a specific supplier
+    // 2. كشف حساب مورد محدد بالتفصيل
     if (supplierId) {
       let { data: supplier } = await adminClient
         .from('suppliers')
@@ -54,23 +54,21 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ success: false, error: 'المورد غير موجود' }, { status: 404 });
       }
 
-      // Fetch all purchases for this supplier
       const { data: purchasesData } = await adminClient
         .from('purchases')
         .select('*')
         .or(`supplier_id.eq.${supplierId},supplier_name.ilike.%${supplier.name || supplier.company_name || supplier.company}%`)
         .order('created_at', { ascending: false });
 
-      // Fetch all payments made to this supplier
       let paymentsData: any[] = [];
       try {
-        let { data: pays, error: pErr } = await adminClient
+        let { data: pays } = await adminClient
           .from('supplier_payments')
           .select('*')
           .eq('supplier_id', supplierId)
           .order('created_at', { ascending: false });
 
-        if (pErr || !pays) {
+        if (!pays) {
           const fb = await supabase
             .from('supplier_payments')
             .select('*')
@@ -83,16 +81,26 @@ export async function GET(req: NextRequest) {
 
       const purchases = purchasesData || [];
       const payments = paymentsData || [];
-      const currentBalance = Number(supplier.current_balance !== undefined && supplier.current_balance !== null ? supplier.current_balance : (supplier.balance || 0));
+
+      const opening = Number(supplier.opening_balance ?? supplier.initial_balance ?? 0);
+      const purchasesDebt = purchases.reduce((sum: number, p: any) => {
+        const tot = Number(p.total ?? p.total_amount ?? 0);
+        const pd = Number(p.paid_amount ?? 0);
+        const rem = Number(p.remaining_amount !== undefined && p.remaining_amount !== null ? p.remaining_amount : Math.max(0, tot - pd));
+        return sum + rem;
+      }, 0);
+      const totalPaid = payments.reduce((sum: number, pay: any) => sum + Number(pay.amount || 0), 0);
+
+      const dynamicBalance = Math.max(0, (opening + purchasesDebt) - totalPaid);
 
       const normalizedSupplier = {
         ...supplier,
         company: supplier.company || supplier.company_name || '',
         company_name: supplier.company_name || supplier.company || '',
-        balance: currentBalance,
-        current_balance: currentBalance,
-        opening_balance: Number(supplier.opening_balance ?? supplier.initial_balance ?? currentBalance),
-        initial_balance: Number(supplier.initial_balance ?? supplier.opening_balance ?? currentBalance)
+        balance: dynamicBalance,
+        current_balance: dynamicBalance,
+        opening_balance: opening,
+        initial_balance: opening
       };
 
       return NextResponse.json({
@@ -103,7 +111,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // 3. List all suppliers with calculated balances
+    // 3. جلب قائمة كل الموردين
     let { data: suppliers, error } = await adminClient.from('suppliers').select('*').order('created_at', { ascending: false });
     if (error || !suppliers) {
       const fb = await supabase.from('suppliers').select('*').order('created_at', { ascending: false });
@@ -114,7 +122,14 @@ export async function GET(req: NextRequest) {
       .from('purchases')
       .select('supplier_id, supplier_name, total, total_amount, paid_amount, remaining_amount');
 
+    let allSupPayments: any[] = [];
+    try {
+      const { data: payData } = await adminClient.from('supplier_payments').select('supplier_id, amount');
+      if (payData) allSupPayments = payData;
+    } catch {}
+
     const purchasesList = Array.isArray(allPurchases) ? allPurchases : [];
+    const paymentsList = Array.isArray(allSupPayments) ? allSupPayments : [];
 
     const formattedSuppliers = (suppliers || []).map((sup: any) => {
       const supPurchases = purchasesList.filter((p: any) => {
@@ -125,17 +140,28 @@ export async function GET(req: NextRequest) {
         return false;
       });
 
-      const actualBalance = Number(sup.current_balance !== undefined && sup.current_balance !== null ? sup.current_balance : (sup.balance || 0));
+      const supPayments = paymentsList.filter((pay: any) => pay.supplier_id === sup.id);
+
+      const opening = Number(sup.opening_balance ?? sup.initial_balance ?? 0);
+      const purchasesDebt = supPurchases.reduce((sum: number, p: any) => {
+        const tot = Number(p.total ?? p.total_amount ?? 0);
+        const pd = Number(p.paid_amount ?? 0);
+        const rem = Number(p.remaining_amount !== undefined && p.remaining_amount !== null ? p.remaining_amount : Math.max(0, tot - pd));
+        return sum + rem;
+      }, 0);
+      const totalPaid = supPayments.reduce((sum: number, pay: any) => sum + Number(pay.amount || 0), 0);
+
+      const dynamicBalance = Math.max(0, (opening + purchasesDebt) - totalPaid);
 
       return {
         ...sup,
         company: sup.company || sup.company_name || '',
         company_name: sup.company_name || sup.company || '',
-        balance: actualBalance,
-        current_balance: actualBalance,
-        opening_balance: Number(sup.opening_balance ?? sup.initial_balance ?? actualBalance),
-        initial_balance: Number(sup.initial_balance ?? sup.opening_balance ?? actualBalance),
-        current_debt: actualBalance,
+        balance: dynamicBalance,
+        current_balance: dynamicBalance,
+        opening_balance: opening,
+        initial_balance: opening,
+        current_debt: dynamicBalance,
         purchases_count: supPurchases.length
       };
     });
@@ -197,7 +223,6 @@ export async function POST(req: NextRequest) {
     let data: any = null;
     let error: any = null;
 
-    // Resilient insert loop: strips any column that doesn't exist in DB schema and retries
     for (let i = 0; i < 7; i++) {
       const res = await adminClient.from('suppliers').insert([payload]).select().maybeSingle();
       if (!res.error && res.data) {
@@ -281,7 +306,6 @@ export async function POST(req: NextRequest) {
       initial_balance: numBalance
     };
 
-    // Resolve user details
     const { data: { user: callerUser } } = await supabase.auth.getUser().catch(() => ({ data: { user: null } }));
     let callerName = '';
     let callerRole = '';
@@ -326,7 +350,6 @@ export async function PUT(req: NextRequest) {
 
     if (!id) return NextResponse.json({ success: false, error: 'معرف المورد مطلوب' }, { status: 400 });
 
-    // Fetch existing supplier
     let { data: existing } = await adminClient.from('suppliers').select('*').eq('id', id).maybeSingle();
     if (!existing) {
       const fb = await supabase.from('suppliers').select('*').eq('id', id).maybeSingle();
@@ -354,7 +377,6 @@ export async function PUT(req: NextRequest) {
     let recordedPaymentAmount = 0;
     const supplierTitle = existing.company_name || existing.company || existing.name || 'مورد';
 
-    // Resolve caller user
     const { data: { user: callerUser } } = await supabase.auth.getUser().catch(() => ({ data: { user: null } }));
     let callerName = '';
     let callerRole = '';
@@ -366,14 +388,11 @@ export async function PUT(req: NextRequest) {
 
     if (payment_amount !== undefined && Number(payment_amount) > 0) {
       recordedPaymentAmount = Number(payment_amount);
-      const currentBal = Number(existing.current_balance !== undefined && existing.current_balance !== null ? existing.current_balance : (existing.balance || 0));
+      const currentBal = Number(existing.balance ?? existing.current_balance ?? 0);
       const newBalance = Math.max(0, currentBal - recordedPaymentAmount);
       updates.balance = newBalance;
       updates.current_balance = newBalance;
-      updates.opening_balance = newBalance;
-      updates.initial_balance = newBalance;
 
-      // 1. Insert into supplier_payments table
       const supPaymentRecord: any = {
         id: crypto.randomUUID(),
         supplier_id: id,
@@ -397,7 +416,6 @@ export async function PUT(req: NextRequest) {
         console.warn('supplier_payments insert warning:', errSup);
       }
 
-      // 2. Insert into treasury_transactions table for Treasury outflow tracking
       const treasuryEntry = {
         id: crypto.randomUUID(),
         transaction_type: 'سداد دفعة مورد',
@@ -416,7 +434,6 @@ export async function PUT(req: NextRequest) {
         console.warn('treasury_transactions insert warning:', errTx);
       }
 
-      // 3. Update purchase invoices remaining debt
       const { data: supPurchases } = await adminClient
         .from('purchases')
         .select('*')
@@ -445,7 +462,6 @@ export async function PUT(req: NextRequest) {
         }
       }
 
-      // 4. Log in audit_logs with exact user name format
       await logAction({
         actionType: 'سداد دفعة للمورد',
         category: 'الخزينة والتحصيلات',
@@ -461,7 +477,6 @@ export async function PUT(req: NextRequest) {
       updates.initial_balance = b;
     }
 
-    // Resilient update stripping any non-existent column
     let updatePayload = { ...updates };
     let updated: any = null;
     let error: any = null;
