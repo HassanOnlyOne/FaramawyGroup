@@ -219,8 +219,10 @@ export default function CustomerLedgerPage() {
 
   statementEvents.sort((a, b) => b.date.getTime() - a.date.getTime());
 
-  // الربط المباشر المضمون مع قاعدة البيانات للرصيد الحقيقي
-  const finalUnifiedDebt = Number(customer.current_debt !== undefined && customer.current_debt !== null ? customer.current_debt : (customer.previous_balance || 0));
+  // الحساب المباشر من الحركات المعروضة لتجنب أي صفوار أو قراءة خاطئة للبروفايل
+  const totalDebit = statementEvents.reduce((acc, ev) => acc + (ev.debit || 0), 0);
+  const totalCredit = statementEvents.reduce((acc, ev) => acc + (ev.credit || 0), 0);
+  const finalUnifiedDebt = Math.max(0, totalDebit - totalCredit);
 
   const creditLimit = Number(customer.credit_limit || 0);
   const availableCredit = Math.max(0, creditLimit - finalUnifiedDebt);
