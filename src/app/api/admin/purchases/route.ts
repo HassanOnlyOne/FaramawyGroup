@@ -33,6 +33,60 @@ async function getNextPurchaseInvoiceNumber(adminClient: any): Promise<string> {
   }
 }
 
+// دالة موحدة لحساب رصيد المورد بدقة: رصيد أول المدة + فواتير المشتريات الآجلة - سدادات الدفعات
+async function recalculateSupplierBalance(adminClient: any, supplierId: string) {
+  if (!supplierId) return;
+
+  // 1. جلب بيانات المورد لمعرفة الرصيد الافتتاحي
+  const { data: supplier } = await adminClient
+    .from('suppliers')
+    .select('*')
+    .eq('id', supplierId)
+    .maybeSingle();
+
+  if (!supplier) return;
+
+  const openingBalance = Number(
+    supplier.opening_balance ?? supplier.initial_balance ?? supplier.previous_balance ?? 0
+  );
+
+  // 2. جلب جميع فواتير المشتريات التابعة لهذا المورد
+  const { data: supPurchases } = await adminClient
+    .from('purchases')
+    .select('total, total_amount, paid_amount, remaining_amount')
+    .eq('supplier_id', supplierId);
+
+  const purchasesRemaining = (supPurchases || []).reduce((sum: number, p: any) => {
+    const t = Number(p.total ?? p.total_amount ?? 0);
+    const pd = Number(p.paid_amount || 0);
+    const r = Number(p.remaining_amount !== undefined && p.remaining_amount !== null ? p.remaining_amount : Math.max(0, t - pd));
+    return sum + r;
+  }, 0);
+
+  // 3. جلب مدفوعات الموردين إن وُجد جدول لسداد الموردين
+  let totalSupplierPayments = 0;
+  try {
+    const { data: supPayments } = await adminClient
+      .from('supplier_payments')
+      .select('amount')
+      .eq('supplier_id', supplierId);
+    if (supPayments) {
+      totalSupplierPayments = supPayments.reduce((acc: number, sp: any) => acc + Number(sp.amount || 0), 0);
+    }
+  } catch {}
+
+  // 4. الرصيد التراكمي الصحيح
+  const finalBalance = Math.max(0, (openingBalance + purchasesRemaining) - totalSupplierPayments);
+
+  await adminClient
+    .from('suppliers')
+    .update({ 
+      balance: finalBalance,
+      current_balance: finalBalance
+    })
+    .eq('id', supplierId);
+}
+
 export async function GET(req: NextRequest) {
   try {
     const adminClient = createAdminClient();
@@ -95,7 +149,6 @@ export async function POST(req: NextRequest) {
       ? String(invoice_number || invoice_no).replace(/\D/g, '') || await getNextPurchaseInvoiceNumber(adminClient)
       : await getNextPurchaseInvoiceNumber(adminClient);
 
-    // Calculate total from items if items are provided
     let computedItemsTotal = 0;
     if (Array.isArray(items) && items.length > 0) {
       computedItemsTotal = items.reduce((sum: number, it: any) => {
@@ -128,12 +181,10 @@ export async function POST(req: NextRequest) {
     let purchaseData: any = null;
     let purchaseError: any = null;
 
-    // Attempt 1: Full payload
     const res1 = await adminClient.from('purchases').insert([payloadAllFields]).select().maybeSingle();
     purchaseData = res1.data;
     purchaseError = res1.error;
 
-    // Attempt 2: If failed with column error, strip non-core columns
     if (purchaseError || !purchaseData) {
       console.warn('Purchase attempt 1 failed, trying fallback columns...', purchaseError?.message);
       
@@ -162,7 +213,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: purchaseError.message || 'فشل حفظ فاتورة المشتريات' }, { status: 400 });
     }
 
-    // Automatically increase product stock quantities in products table
+    // زيادة كميات المخزون في جدول المنتجات
     if (Array.isArray(items) && items.length > 0) {
       for (const item of items) {
         const prodId = item.product_id || item.id;
@@ -178,24 +229,9 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Automatically update supplier debt in suppliers table
+    // إعادة حساب رصيد المورد التراكمي (أول المدة + فواتير المشتريات)
     if (supplier_id) {
-      const { data: supPurchases } = await adminClient
-        .from('purchases')
-        .select('total, total_amount, paid_amount, remaining_amount')
-        .eq('supplier_id', supplier_id);
-
-      let totalSupDebt = remVal;
-      if (supPurchases && supPurchases.length > 0) {
-        totalSupDebt = supPurchases.reduce((sum: number, p: any) => {
-          const t = Number(p.total || p.total_amount || 0);
-          const pd = Number(p.paid_amount || 0);
-          const r = Number(p.remaining_amount !== undefined && p.remaining_amount !== null ? p.remaining_amount : Math.max(0, t - pd));
-          return sum + r;
-        }, 0);
-      }
-
-      await adminClient.from('suppliers').update({ balance: totalSupDebt }).eq('id', supplier_id);
+      await recalculateSupplierBalance(adminClient, supplier_id);
     }
 
     await logAction({
@@ -214,7 +250,7 @@ export async function POST(req: NextRequest) {
         remaining_amount: remVal,
         invoice_no: invoiceNum
       },
-      message: 'تم تسجيل فاتورة المشتريات وتحديث المخزون بنجاح'
+      message: 'تم تسجيل فاتورة المشتريات وتحديث المخزون ورصيد المورد بنجاح'
     }, { status: 201 });
   } catch (err: any) {
     console.error('Purchase POST error:', err);
@@ -246,7 +282,6 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'معرف الفاتورة مطلوب للتعديل' }, { status: 400 });
     }
 
-    // Fetch existing purchase to compute stock differences
     const { data: existingPurchase } = await adminClient
       .from('purchases')
       .select('*')
@@ -257,7 +292,6 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'فاتورة المشتريات غير موجودة' }, { status: 404 });
     }
 
-    // Calculate total from items
     let computedItemsTotal = 0;
     if (Array.isArray(items) && items.length > 0) {
       computedItemsTotal = items.reduce((sum: number, it: any) => {
@@ -275,10 +309,8 @@ export async function PUT(req: NextRequest) {
     const remVal = Number(remaining_amount !== undefined ? remaining_amount : Math.max(0, totalVal - paidVal));
     const invNum = invoice_no || invoice_number || existingPurchase.invoice_no || existingPurchase.invoice_number;
 
-    // Adjust product stocks based on diff between old items and new items
     const oldItems = Array.isArray(existingPurchase.items) ? existingPurchase.items : [];
     
-    // First, subtract old items quantities that were originally added
     for (const oldIt of oldItems) {
       const prodId = oldIt.product_id || oldIt.id;
       const oldQty = Number(oldIt.quantity || 0);
@@ -292,7 +324,6 @@ export async function PUT(req: NextRequest) {
       }
     }
 
-    // Next, add the new items quantities
     if (Array.isArray(items) && items.length > 0) {
       for (const newIt of items) {
         const prodId = newIt.product_id || newIt.id;
@@ -353,25 +384,10 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ success: false, error: updateError.message }, { status: 400 });
     }
 
-    // Recalculate supplier balance
+    // إعادة ضبط رصيد المورد التراكمي
     const effectiveSupId = supplier_id || existingPurchase.supplier_id;
     if (effectiveSupId) {
-      const { data: supPurchases } = await adminClient
-        .from('purchases')
-        .select('total, total_amount, paid_amount, remaining_amount')
-        .eq('supplier_id', effectiveSupId);
-
-      let totalSupDebt = 0;
-      if (supPurchases && supPurchases.length > 0) {
-        totalSupDebt = supPurchases.reduce((sum: number, p: any) => {
-          const t = Number(p.total || p.total_amount || 0);
-          const pd = Number(p.paid_amount || 0);
-          const r = Number(p.remaining_amount !== undefined && p.remaining_amount !== null ? p.remaining_amount : Math.max(0, t - pd));
-          return sum + r;
-        }, 0);
-      }
-
-      await adminClient.from('suppliers').update({ balance: totalSupDebt }).eq('id', effectiveSupId);
+      await recalculateSupplierBalance(adminClient, effectiveSupId);
     }
 
     await logAction({
@@ -409,7 +425,6 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'معرف فاتورة المشتريات مطلوب للحذف' }, { status: 400 });
     }
 
-    // Fetch existing purchase to reverse stock
     const { data: purchase } = await adminClient
       .from('purchases')
       .select('*')
@@ -420,7 +435,6 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'فاتورة المشتريات غير موجودة' }, { status: 404 });
     }
 
-    // Reverse added stock for each item in the purchase
     const items = Array.isArray(purchase.items) ? purchase.items : [];
     for (const item of items) {
       const prodId = item.product_id || item.id;
@@ -435,30 +449,14 @@ export async function DELETE(req: NextRequest) {
       }
     }
 
-    // Delete purchase from database
     const { error: delError } = await adminClient.from('purchases').delete().eq('id', purchaseId);
     if (delError) {
       await supabase.from('purchases').delete().eq('id', purchaseId);
     }
 
-    // Recalculate supplier balance
+    // إعادة ضبط رصيد المورد بعد الحذف
     if (purchase.supplier_id) {
-      const { data: supPurchases } = await adminClient
-        .from('purchases')
-        .select('total, total_amount, paid_amount, remaining_amount')
-        .eq('supplier_id', purchase.supplier_id);
-
-      let totalSupDebt = 0;
-      if (supPurchases && supPurchases.length > 0) {
-        totalSupDebt = supPurchases.reduce((sum: number, p: any) => {
-          const t = Number(p.total || p.total_amount || 0);
-          const pd = Number(p.paid_amount || 0);
-          const r = Number(p.remaining_amount !== undefined && p.remaining_amount !== null ? p.remaining_amount : Math.max(0, t - pd));
-          return sum + r;
-        }, 0);
-      }
-
-      await adminClient.from('suppliers').update({ balance: totalSupDebt }).eq('id', purchase.supplier_id);
+      await recalculateSupplierBalance(adminClient, purchase.supplier_id);
     }
 
     const invNum = purchase.invoice_no || purchase.invoice_number || purchaseId;
