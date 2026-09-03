@@ -175,10 +175,7 @@ export default function CustomerLedgerPage() {
 
   const custCodeClean = customer.customer_code ? String(customer.customer_code).replace(/\D/g, '') : (customer.id ? String(customer.id).slice(-4) : '1004');
 
-  // Unified Single Source of Truth: Read debt directly from customer profile database field!
-  const finalUnifiedDebt = Number(customer.current_debt !== undefined && customer.current_debt !== null ? customer.current_debt : (customer.previous_balance || 0));
-
-  // Build Statement Events
+  // Build Statement Events first to calculate exact totals
   const statementEvents: any[] = [];
 
   orders.forEach(o => {
@@ -219,6 +216,15 @@ export default function CustomerLedgerPage() {
 
   // Sort chronological for display order
   statementEvents.sort((a, b) => b.date.getTime() - a.date.getTime());
+
+  // Unified Single Source of Truth: Take database profile debt, but ensure it syncs with actual calculated balance if profile is stale
+  const totalDebit = statementEvents.reduce((acc, ev) => acc + ev.debit, 0);
+  const totalCredit = statementEvents.reduce((acc, ev) => acc + ev.credit, 0);
+  const calculatedNetDebt = Math.max(0, totalDebit - totalCredit);
+  
+  // Use profile debt if valid, otherwise fallback to calculated net debt to guarantee 100% sync
+  const profileDebt = Number(customer.current_debt !== undefined && customer.current_debt !== null ? customer.current_debt : (customer.previous_balance || 0));
+  const finalUnifiedDebt = profileDebt > 0 ? Math.min(profileDebt, calculatedNetDebt > 0 ? calculatedNetDebt : profileDebt) : calculatedNetDebt;
 
   const creditLimit = Number(customer.credit_limit || 0);
   const availableCredit = Math.max(0, creditLimit - finalUnifiedDebt);
