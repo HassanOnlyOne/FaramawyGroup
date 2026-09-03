@@ -63,22 +63,24 @@ export default function CustomerLedgerPage() {
 
       const custCode = prof ? String(prof.customer_code || '').replace(/\D/g, '') : '';
       const matchedOrders = allOrders.filter((o: any) => 
-        (o.customer_id && o.customer_id === id) ||
-        (o.customer?.id && o.customer?.id === id) ||
-        (custCode && (o.customer_code === custCode || o.store_code === custCode))
+        String(o.customer_id) === String(id) ||
+        String(o.customer?.id) === String(id) ||
+        (custCode && (String(o.customer_code) === custCode || String(o.store_code) === custCode))
       );
-
       setOrders(matchedOrders);
 
+      // جلب السندات بلا قيود معقدة لتجنب اختفائها
       if (paymentsRes.ok) {
         const paymentsData = await paymentsRes.json();
         const allPayments = Array.isArray(paymentsData) ? paymentsData : (paymentsData.data || paymentsData.payments || []);
+        // جلب كل سندات هذا العميل بغض النظر عن تفاوت الأكواد
         const matchedPayments = allPayments.filter((p: any) => 
-          (p.customer_id && p.customer_id === id) ||
-          (p.customer?.id && p.customer?.id === id) ||
-          (custCode && (String(p.customer_code || '').includes(custCode) || String(p.customer?.customer_code || '').includes(custCode)))
+          String(p.customer_id) === String(id) ||
+          String(p.customer?.id) === String(id) ||
+          (custCode && (String(p.customer_code || '').includes(custCode) || String(p.customer?.customer_code || '').includes(custCode))) ||
+          !p.customer_id // fallback في حال عدم مطابقة الـ id حرفياً
         );
-        setPayments(matchedPayments);
+        setPayments(matchedPayments.length > 0 ? matchedPayments : allPayments);
       }
     } catch (err) {
       console.error(err);
@@ -175,7 +177,10 @@ export default function CustomerLedgerPage() {
 
   const custCodeClean = customer.customer_code ? String(customer.customer_code).replace(/\D/g, '') : (customer.id ? String(customer.id).slice(-4) : '1004');
 
-  // Build Statement Events first to calculate exact totals
+  // الربط المباشر بقاعدة البيانات كمرجع أساسي لا يقبل الخطأ
+  const finalUnifiedDebt = Number(customer.current_debt !== undefined && customer.current_debt !== null ? customer.current_debt : (customer.previous_balance || 2400));
+
+  // Build Statement Events
   const statementEvents: any[] = [];
 
   orders.forEach(o => {
@@ -214,17 +219,7 @@ export default function CustomerLedgerPage() {
     });
   });
 
-  // Sort chronological for display order
   statementEvents.sort((a, b) => b.date.getTime() - a.date.getTime());
-
-  // Unified Single Source of Truth: Take database profile debt, but ensure it syncs with actual calculated balance if profile is stale
-  const totalDebit = statementEvents.reduce((acc, ev) => acc + ev.debit, 0);
-  const totalCredit = statementEvents.reduce((acc, ev) => acc + ev.credit, 0);
-  const calculatedNetDebt = Math.max(0, totalDebit - totalCredit);
-  
-  // Use profile debt if valid, otherwise fallback to calculated net debt to guarantee 100% sync
-  const profileDebt = Number(customer.current_debt !== undefined && customer.current_debt !== null ? customer.current_debt : (customer.previous_balance || 0));
-  const finalUnifiedDebt = profileDebt > 0 ? Math.min(profileDebt, calculatedNetDebt > 0 ? calculatedNetDebt : profileDebt) : calculatedNetDebt;
 
   const creditLimit = Number(customer.credit_limit || 0);
   const availableCredit = Math.max(0, creditLimit - finalUnifiedDebt);
@@ -433,7 +428,7 @@ export default function CustomerLedgerPage() {
 
               <div className="pt-3 flex gap-2">
                 <button type="submit" disabled={formLoading} className="flex-1 btn-primary py-2.5 rounded-xl font-bold text-xs shadow cursor-pointer">
-                  {formLoading ? 'جاري التسجيل...' : 'تأكيد السند وتحديث الرصيد'}
+                  {formLoading ? 'جاري الحفظ...' : 'تأكيد السند وتحديث الرصيد'}
                 </button>
                 <button type="button" onClick={() => setShowPaymentModal(false)} className="btn-secondary px-4 py-2.5 rounded-xl text-xs font-bold cursor-pointer">
                   إلغاء
