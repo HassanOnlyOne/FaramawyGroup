@@ -14,7 +14,10 @@ import {
   DollarSign, 
   FileText,
   Printer,
-  X
+  X,
+  ChevronDown,
+  ChevronUp,
+  Package
 } from 'lucide-react';
 
 export default function SuppliersPage() {
@@ -32,12 +35,13 @@ export default function SuppliersPage() {
   const [paymentNotes, setPaymentNotes] = useState('');
   const [formLoading, setFormLoading] = useState(false);
 
-  // Supplier Statement State
+  // Statement State
   const [statementSupplier, setStatementSupplier] = useState<any>(null);
   const [statementPurchases, setStatementPurchases] = useState<any[]>([]);
   const [statementPayments, setStatementPayments] = useState<any[]>([]);
   const [statementLoading, setStatementLoading] = useState(false);
   const [statementTab, setStatementTab] = useState<'all' | 'purchases' | 'payments'>('all');
+  const [expandedInvoiceId, setExpandedInvoiceId] = useState<string | null>(null);
 
   const [newSupplier, setNewSupplier] = useState({
     name: '',
@@ -75,6 +79,7 @@ export default function SuppliersPage() {
     setStatementPurchases([]);
     setStatementPayments([]);
     setStatementTab('all');
+    setExpandedInvoiceId(null);
 
     try {
       const res = await fetch(`/api/admin/suppliers?id=${supplier.id}&t=${Date.now()}`);
@@ -236,7 +241,9 @@ export default function SuppliersPage() {
         })
       });
 
-      if (res.ok) {
+      const resData = await res.json().catch(() => ({}));
+
+      if (res.ok && resData.success !== false) {
         toast({ title: 'تم تسجيل سداد الدفعة وحفظ السند بنجاح', type: 'success' });
         const targetSupplier = paymentSupplier;
         setPaymentSupplier(null);
@@ -247,7 +254,11 @@ export default function SuppliersPage() {
           handleOpenStatement(targetSupplier);
         }
       } else {
-        toast({ title: 'خطأ في تسجيل الدفعة', type: 'error' });
+        toast({ 
+          title: 'خطأ في تسجيل الدفعة', 
+          description: resData.error || 'فشل تسجيل السند في قاعدة البيانات', 
+          type: 'error' 
+        });
       }
     } catch (err: any) {
       toast({ title: 'خطأ في الاتصال بالسيرفر', description: err.message, type: 'error' });
@@ -265,7 +276,7 @@ export default function SuppliersPage() {
 
   const totalSupplierDebt = safeSuppliers.reduce((sum, s) => sum + Number(s.current_balance || s.balance || s.current_debt || 0), 0);
 
-  // كشف الحساب
+  // حسابات كشف الحساب
   const openingBal = Number(statementSupplier?.opening_balance ?? statementSupplier?.initial_balance ?? 0);
   const statementPurchasesTotal = statementPurchases.reduce((sum, p) => sum + Number(p.total || p.total_amount || 0), 0);
   const statementPurchasesPaid = statementPurchases.reduce((sum, p) => sum + Number(p.paid_amount || 0), 0);
@@ -290,6 +301,7 @@ export default function SuppliersPage() {
   statementPurchases.forEach(p => {
     combinedStatement.push({
       id: `pur-${p.id}`,
+      rawPurchase: p,
       date: p.created_at,
       type: 'فاتورة توريد',
       ref: p.invoice_no || p.invoice_number || `فاتورة #${String(p.id).slice(0, 6)}`,
@@ -584,54 +596,178 @@ export default function SuppliersPage() {
 
                   {/* Statement Table */}
                   <div className="border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-xs print:border-none print:shadow-none print:rounded-none">
-                    <table className="w-full text-right text-xs border-collapse">
-                      <thead className="bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-slate-700 print:bg-slate-100 print:text-black">
-                        <tr>
-                          <th className="p-3 print:p-2 print:border print:border-slate-300">التاريخ والوقت</th>
-                          <th className="p-3 print:p-2 print:border print:border-slate-300">نوع الحركة</th>
-                          <th className="p-3 print:p-2 print:border print:border-slate-300">المرجع / الفاتورة</th>
-                          <th className="p-3 print:p-2 print:border print:border-slate-300">دائن (+) بضاعة موردة</th>
-                          <th className="p-3 print:p-2 print:border print:border-slate-300">مدين (-) مسدد للمورد</th>
-                          <th className="p-3 print:p-2 print:border print:border-slate-300">البيان / الملاحظات</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-medium print:divide-slate-300">
-                        {combinedStatement.length === 0 ? (
-                          <tr><td colSpan={6} className="p-8 text-center text-slate-400 print:border">لا توجد حركات مسجلة للمورد حتى الآن</td></tr>
+                    {statementTab === 'all' && (
+                      <table className="w-full text-right text-xs border-collapse">
+                        <thead className="bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-slate-700 print:bg-slate-100 print:text-black">
+                          <tr>
+                            <th className="p-3 print:p-2 print:border print:border-slate-300">التاريخ والوقت</th>
+                            <th className="p-3 print:p-2 print:border print:border-slate-300">نوع الحركة</th>
+                            <th className="p-3 print:p-2 print:border print:border-slate-300">المرجع / الفاتورة</th>
+                            <th className="p-3 print:p-2 print:border print:border-slate-300">دائن (+) بضاعة موردة</th>
+                            <th className="p-3 print:p-2 print:border print:border-slate-300">مدين (-) مسدد للمورد</th>
+                            <th className="p-3 print:p-2 print:border print:border-slate-300">البيان / الملاحظات</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-medium print:divide-slate-300">
+                          {combinedStatement.length === 0 ? (
+                            <tr><td colSpan={6} className="p-8 text-center text-slate-400 print:border">لا توجد حركات مسجلة للمورد حتى الآن</td></tr>
+                          ) : (
+                            combinedStatement.map(it => (
+                              <tr key={it.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 print:bg-transparent">
+                                <td className="p-3 font-mono whitespace-nowrap text-slate-500 dark:text-slate-400 print:p-2 print:text-black print:border print:border-slate-300">
+                                  {new Date(it.date).toLocaleDateString('ar-EG', { year: 'numeric', month: 'short', day: 'numeric' })}
+                                </td>
+                                <td className="p-3 whitespace-nowrap print:p-2 print:text-black print:border print:border-slate-300">
+                                  <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border print:p-0 print:border-none ${
+                                    it.type.includes('افتتاحي')
+                                      ? 'bg-purple-50 dark:bg-purple-950/60 text-purple-800 dark:text-purple-300 border-purple-200 dark:border-purple-800'
+                                      : it.type.includes('فاتورة')
+                                      ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800'
+                                      : 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                                  }`}>
+                                    {it.type}
+                                  </span>
+                                </td>
+                                <td className="p-3 font-mono font-bold text-slate-900 dark:text-white whitespace-nowrap print:p-2 print:text-black print:border print:border-slate-300">
+                                  {it.ref}
+                                </td>
+                                <td className="p-3 font-mono font-bold text-slate-900 dark:text-white whitespace-nowrap print:p-2 print:text-black print:border print:border-slate-300">
+                                  {it.inflowCredit > 0 ? formatPriceShort(it.inflowCredit) : '---'}
+                                </td>
+                                <td className="p-3 font-mono font-bold text-emerald-600 dark:text-emerald-400 whitespace-nowrap print:p-2 print:text-black print:border print:border-slate-300">
+                                  {it.outflowDebit > 0 ? formatPriceShort(it.outflowDebit) : '---'}
+                                </td>
+                                <td className="p-3 text-slate-600 dark:text-slate-300 print:p-2 print:text-black print:border print:border-slate-300">
+                                  {it.notes}
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    )}
+
+                    {statementTab === 'purchases' && (
+                      <div className="divide-y divide-slate-200 dark:divide-slate-800">
+                        {statementPurchases.length === 0 ? (
+                          <div className="p-8 text-center text-slate-400 text-xs">لا توجد فواتير توريد مسجلة</div>
                         ) : (
-                          combinedStatement.map(it => (
-                            <tr key={it.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 print:bg-transparent">
-                              <td className="p-3 font-mono whitespace-nowrap text-slate-500 dark:text-slate-400 print:p-2 print:text-black print:border print:border-slate-300">
-                                {new Date(it.date).toLocaleDateString('ar-EG', { year: 'numeric', month: 'short', day: 'numeric' })}
-                              </td>
-                              <td className="p-3 whitespace-nowrap print:p-2 print:text-black print:border print:border-slate-300">
-                                <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold border print:p-0 print:border-none ${
-                                  it.type.includes('افتتاحي')
-                                    ? 'bg-purple-50 dark:bg-purple-950/60 text-purple-800 dark:text-purple-300 border-purple-200 dark:border-purple-800'
-                                    : it.type.includes('فاتورة')
-                                    ? 'bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800'
-                                    : 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
-                                }`}>
-                                  {it.type}
-                                </span>
-                              </td>
-                              <td className="p-3 font-mono font-bold text-slate-900 dark:text-white whitespace-nowrap print:p-2 print:text-black print:border print:border-slate-300">
-                                {it.ref}
-                              </td>
-                              <td className="p-3 font-mono font-bold text-slate-900 dark:text-white whitespace-nowrap print:p-2 print:text-black print:border print:border-slate-300">
-                                {it.inflowCredit > 0 ? formatPriceShort(it.inflowCredit) : '---'}
-                              </td>
-                              <td className="p-3 font-mono font-bold text-emerald-600 dark:text-emerald-400 whitespace-nowrap print:p-2 print:text-black print:border print:border-slate-300">
-                                {it.outflowDebit > 0 ? formatPriceShort(it.outflowDebit) : '---'}
-                              </td>
-                              <td className="p-3 text-slate-600 dark:text-slate-300 print:p-2 print:text-black print:border print:border-slate-300">
-                                {it.notes}
-                              </td>
-                            </tr>
-                          ))
+                          statementPurchases.map(p => {
+                            const tot = Number(p.total || p.total_amount || 0);
+                            const pd = Number(p.paid_amount || 0);
+                            const rem = Number(p.remaining_amount !== undefined && p.remaining_amount !== null ? p.remaining_amount : Math.max(0, tot - pd));
+                            const items = Array.isArray(p.items) ? p.items : [];
+                            const isExpanded = expandedInvoiceId === p.id;
+
+                            return (
+                              <div key={p.id} className="p-3 sm:p-4 bg-white dark:bg-slate-900">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <div className="flex items-center gap-3">
+                                    <span className="font-mono font-bold text-slate-900 dark:text-white text-sm">
+                                      #{p.invoice_no || p.invoice_number || String(p.id).slice(0, 8)}
+                                    </span>
+                                    <span className="text-xs text-slate-500 font-mono">
+                                      {new Date(p.created_at).toLocaleDateString('ar-EG')}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-4 text-xs font-mono">
+                                    <span>الإجمالي: <strong className="text-slate-900 dark:text-white">{formatPriceShort(tot)}</strong></span>
+                                    <span>المسدد: <strong className="text-emerald-600">{formatPriceShort(pd)}</strong></span>
+                                    <span>المتبقي: <strong className="text-red-600">{formatPriceShort(rem)}</strong></span>
+                                    <button
+                                      onClick={() => setExpandedInvoiceId(isExpanded ? null : p.id)}
+                                      className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 print:hidden cursor-pointer"
+                                      title="عرض تفاصيل الأصناف"
+                                    >
+                                      {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                                    </button>
+                                  </div>
+                                </div>
+
+                                {/* Items Breakdown Table */}
+                                {(isExpanded || true) && items.length > 0 && (
+                                  <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+                                    <table className="w-full text-right text-[11px] bg-slate-50/50 dark:bg-slate-850/50 rounded-xl overflow-hidden">
+                                      <thead className="text-slate-500 font-bold border-b border-slate-200 dark:border-slate-800">
+                                        <tr>
+                                          <th className="p-2">الصنف المورد</th>
+                                          <th className="p-2">الكمية</th>
+                                          <th className="p-2">سعر الشراء</th>
+                                          <th className="p-2">الإجمالي</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                                        {items.map((it: any, idx: number) => {
+                                          const qty = Number(it.quantity || 1);
+                                          const price = Number(it.unit_price || it.price || 0);
+                                          const total = it.total_price ? Number(it.total_price) : qty * price;
+                                          return (
+                                            <tr key={idx}>
+                                              <td className="p-2 font-bold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">
+                                                <Package className="w-3 h-3 text-slate-400" />
+                                                <span>{it.product_name || it.name || it.title || 'صنف توريد'}</span>
+                                              </td>
+                                              <td className="p-2 font-mono">{formatNumber(qty)} {it.unit || 'قطعة'}</td>
+                                              <td className="p-2 font-mono">{formatPriceShort(price)}</td>
+                                              <td className="p-2 font-mono font-bold text-slate-900 dark:text-white">{formatPriceShort(total)}</td>
+                                            </tr>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })
                         )}
-                      </tbody>
-                    </table>
+                      </div>
+                    )}
+
+                    {statementTab === 'payments' && (
+                      <table className="w-full text-right text-xs border-collapse">
+                        <thead className="bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-slate-700 print:bg-slate-100 print:text-black">
+                          <tr>
+                            <th className="p-3">التاريخ والوقت</th>
+                            <th className="p-3">رقم السند</th>
+                            <th className="p-3">المبلغ المسدد نقداً</th>
+                            <th className="p-3">طريقة الدفع</th>
+                            <th className="p-3">البيان والملاحظات</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-medium print:divide-slate-300">
+                          {statementPayments.length === 0 ? (
+                            <tr><td colSpan={5} className="p-8 text-center text-slate-400 print:border">لا توجد سدادات نقدية مسجلة</td></tr>
+                          ) : (
+                            statementPayments.map(pay => (
+                              <tr key={pay.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 print:bg-transparent">
+                                <td className="p-3 font-mono whitespace-nowrap text-slate-700 dark:text-slate-300">
+                                  <span className="font-bold block">
+                                    {new Date(pay.created_at || pay.payment_date).toLocaleDateString('ar-EG', { year: 'numeric', month: 'short', day: 'numeric' })}
+                                  </span>
+                                </td>
+                                <td className="p-3 font-mono font-bold text-slate-900 dark:text-white">
+                                  <span className="bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded text-[11px] border border-slate-200 dark:border-slate-700">
+                                    #{String(pay.id).slice(0, 8)}
+                                  </span>
+                                </td>
+                                <td className="p-3 font-mono font-black text-emerald-600 dark:text-emerald-400 text-sm whitespace-nowrap">
+                                  {formatPriceShort(Number(pay.amount || 0))}
+                                </td>
+                                <td className="p-3 text-slate-700 dark:text-slate-300">
+                                  <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[10px] font-bold border border-emerald-200">
+                                    {pay.payment_method || 'كاش نقدي'}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-slate-600 dark:text-slate-300">
+                                  <span>{pay.notes || 'سداد نقدي لحساب المورد'}</span>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    )}
                   </div>
 
                   {/* Print Official Signatures */}

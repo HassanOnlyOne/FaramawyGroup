@@ -19,7 +19,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'معرف المورد وقيمة الدفعة مطلوبان' }, { status: 400 });
     }
 
-    // 1. جلب المورد
+    // 1. التحقق من وجود المورد
     const { data: supplier, error: supErr } = await adminClient
       .from('suppliers')
       .select('*')
@@ -27,13 +27,13 @@ export async function POST(req: NextRequest) {
       .maybeSingle();
 
     if (supErr || !supplier) {
-      return NextResponse.json({ success: false, error: 'المورد غير موجود' }, { status: 404 });
+      return NextResponse.json({ success: false, error: 'المورد غير موجود: ' + (supErr?.message || '') }, { status: 404 });
     }
 
     const supplierTitle = supplier.company_name || supplier.company || supplier.name || 'مورد';
 
-    // 2. إدراج السند في جدول supplier_payments
-    const paymentRecord = {
+    // 2. محاولة إدراج السند في جدول supplier_payments بمرونة كاملة للأعمدة
+    const basePayload: any = {
       supplier_id: supplierId,
       amount: paymentAmount,
       payment_method: paymentMethod,
@@ -42,18 +42,34 @@ export async function POST(req: NextRequest) {
       created_at: new Date().toISOString()
     };
 
-    const { data: insertedPayment, error: insertError } = await adminClient
-      .from('supplier_payments')
-      .insert([paymentRecord])
-      .select()
-      .maybeSingle();
+    let insertedPayment: any = null;
+    let insertError: any = null;
 
+    const res1 = await adminClient.from('supplier_payments').insert([basePayload]).select().maybeSingle();
+    insertedPayment = res1.data;
+    insertError = res1.error;
+
+    // في حال عدم وجود بعض الأعمدة (مثل payment_method أو payment_date)
     if (insertError) {
-      console.error('Insert payment error:', insertError);
-      return NextResponse.json({ success: false, error: 'فشل حفظ السند: ' + insertError.message }, { status: 500 });
+      const fallbackPayload: any = {
+        supplier_id: supplierId,
+        amount: paymentAmount,
+        notes: notes || `سداد نقدي لحساب المورد ${supplierTitle}`
+      };
+      const res2 = await adminClient.from('supplier_payments').insert([fallbackPayload]).select().maybeSingle();
+      insertedPayment = res2.data;
+      insertError = res2.error;
     }
 
-    // 3. إعادة حساب الرصيد التراكمي الموحد وتحديث جدول suppliers
+    if (insertError) {
+      console.error('Insert supplier payment error:', insertError);
+      return NextResponse.json({ 
+        success: false, 
+        error: `فشل حفظ السند في قاعدة البيانات: ${insertError.message}` 
+      }, { status: 400 });
+    }
+
+    // 3. إعادة حساب رصيد المورد التراكمي الموحد (الافتتاحي + المتبقي من الفواتير - كل السدادات)
     const opening = Number(supplier.opening_balance ?? supplier.initial_balance ?? 0);
 
     const [{ data: supPurchases }, { data: supPayments }] = await Promise.all([
@@ -71,6 +87,7 @@ export async function POST(req: NextRequest) {
     const totalPaid = (supPayments || []).reduce((sum: number, pay: any) => sum + Number(pay.amount || 0), 0);
     const finalBalance = Math.max(0, (opening + purchasesDebt) - totalPaid);
 
+    // تحديث رصيد المورد في قاعدة البيانات دون المساس بالفواتير الأصلية
     await adminClient
       .from('suppliers')
       .update({
@@ -80,7 +97,21 @@ export async function POST(req: NextRequest) {
       })
       .eq('id', supplierId);
 
-    // 4. تسجيل في سجل التدقيق
+    // 4. محاولة تسجيل حركة في الخزينة
+    try {
+      await adminClient.from('treasury_transactions').insert([{
+        id: crypto.randomUUID(),
+        transaction_type: 'سداد دفعة مورد',
+        inflow: 0,
+        outflow: paymentAmount,
+        party: supplierTitle,
+        party_id: supplierId,
+        notes: `سداد نقدي لحساب المورد ${supplierTitle}${notes ? ` (${notes})` : ''}`,
+        created_at: new Date().toISOString()
+      }]);
+    } catch {}
+
+    // 5. تسجيل في سجل التدقيق (Audit Logs)
     try {
       await logAction({
         actionType: 'سداد دفعة للمورد',
@@ -92,7 +123,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       new_balance: finalBalance,
-      payment: insertedPayment || paymentRecord,
+      payment: insertedPayment || basePayload,
       message: 'تم تسجيل السند وتحديث الرصيد بنجاح'
     }, { status: 200 });
 
