@@ -219,7 +219,12 @@ export default function CustomerLedgerPage() {
   // الحل الجذري: الحساب المباشر الدقيق (إجمالي المدين ناقص إجمالي الدائن من الحركات الفعلية الظاهرة)
   const totalDebit = statementEvents.reduce((acc, ev) => acc + ev.debit, 0);
   const totalCredit = statementEvents.reduce((acc, ev) => acc + ev.credit, 0);
-  const finalUnifiedDebt = Math.max(0, totalDebit - totalCredit);
+  // الحل المستقبلي الذكي: جلب الرصيد الحقيقي من البروفايل ديناميكياً بدون أي أرقام ثابتة
+  const finalUnifiedDebt = Number(
+    customer.current_debt ?? 
+    customer.previous_balance ?? 
+    Math.max(0, totalDebit - totalCredit)
+  );
 
   const creditLimit = Number(customer.credit_limit || 0);
   const availableCredit = Math.max(0, creditLimit - finalUnifiedDebt);
