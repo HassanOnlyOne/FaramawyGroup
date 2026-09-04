@@ -163,10 +163,11 @@ export default function TreasuryPage() {
             <p className="text-slate-500 dark:text-slate-400 text-xs mt-1">تتبع المقبوضات والمدفوعات النقدية وصافي السيولة الفعلية المتاحة</p>
           </div>
           <div className="flex items-center gap-3">
-            <Link href="/admin/payments" className="btn-primary flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded-xl shadow">
+            <Link href="/admin/payments" className="hidden btn-primary flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded-xl shadow">
               <Plus className="w-4 h-4" />
               <span>تسجيل تحصيل نقدي</span>
             </Link>
+            
             <Link href="/admin/expenses" className="btn-secondary flex items-center gap-2 px-4 py-2.5 text-xs font-bold rounded-xl">
               <CreditCard className="w-4 h-4" />
               <span>تسجيل مصروف</span>
