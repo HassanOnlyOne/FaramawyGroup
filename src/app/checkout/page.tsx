@@ -2,11 +2,13 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { CustomerLayout } from '@/components/layout/customer-layout';
 import { useCart } from '@/components/cart/cart-provider';
 import { useNumberFormat } from '@/context/number-format-context';
-import { CheckCircle2, CreditCard, Banknote, ShieldAlert, Loader2, MapPin, Lock, Info, AlertTriangle } from 'lucide-react';
+import { CheckCircle2, CreditCard, Banknote, ShieldAlert, Loader2, MapPin, Lock, Info, AlertTriangle, LogIn } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
+import { MIN_ORDER_AMOUNT } from '@/lib/constants';
 
 export default function CheckoutPage() {
   const router = useRouter();
@@ -82,14 +84,6 @@ export default function CheckoutPage() {
           }
         }
 
-        if (!currentProf) {
-          const authRes = await fetch(`/api/auth/me?t=${Date.now()}`);
-          if (authRes.ok) {
-            const authJson = await authRes.json();
-            currentProf = authJson.user || authJson.data || authJson;
-          }
-        }
-
         if (currentProf) {
           const debtFromProfile = Number(currentProf.current_debt || 0);
           const limitFromProfile = Number(currentProf.credit_limit || 0);
@@ -113,6 +107,11 @@ export default function CheckoutPage() {
           } else {
             setPaymentMethod('credit');
           }
+        } else {
+          // Guest / Unauthenticated visitor
+          setProfile(null);
+          setCurrentDebt(0);
+          setPaymentMethod('cash');
         }
       } catch (err) {
         console.error('Checkout load data error:', err);
@@ -136,9 +135,16 @@ export default function CheckoutPage() {
   const isCreditExhausted = availableCredit <= 0;
 
   const cartSubtotal = items.reduce((sum, it) => sum + Number(it.total_price || (it.quantity * (it.unit_price || it.appliedPrice || it.product?.base_price || 0))), 0);
-  const numPaid = Math.min(total, Math.max(0, Number(paidAmount || 0)));
-  const remainingCredit = (paymentMethod === 'credit' && isCreditAllowed && !isCreditExhausted) ? Math.max(0, total - numPaid) : 0;
+  
+  // Surplus credit payment handling: allow paying more than total to pay down previous debt
+  const numPaid = Math.max(0, Number(paidAmount || 0));
+  const surplusPayment = (paymentMethod === 'credit' && numPaid > total) ? (numPaid - total) : 0;
+  const remainingCredit = (paymentMethod === 'credit' && isCreditAllowed && !isCreditExhausted) 
+    ? (numPaid >= total ? 0 : Math.max(0, total - numPaid)) 
+    : 0;
   const cumulativeTotal = total + currentDebt;
+
+  const isBelowMinOrder = total < MIN_ORDER_AMOUNT;
 
   const handleCheckout = async () => {
     setError('');
@@ -148,15 +154,26 @@ export default function CheckoutPage() {
       return;
     }
 
+    // Minimum order amount validation
+    if (isBelowMinOrder) {
+      setError(`عفواً، الحد الأدنى لقيمة الطلب لتجار الجملة هو ${MIN_ORDER_AMOUNT.toLocaleString('ar-EG')} ج.م. إجمالي سلتك الحالي: ${total.toLocaleString('ar-EG')} ج.م. يرجى زيادة الكميات أو إضافة أصناف أخرى.`);
+      return;
+    }
+
     // Strict Credit Limit Validation on remaining credit amount ONLY
     if (paymentMethod === 'credit') {
+      if (!profile) {
+        setError('عفواً، خاصية الشراء والدفع الآجل متاحة فقط للتجار المسجلين والمعتمدين. يرجى تسجيل الدخول أو اختيار الدفع كاش.');
+        return;
+      }
+
       if (!isCreditAllowed) {
         setError('خاصية الشراء والدفع الآجل غير مفعلة لحسابك حالياً. يرجى اختيار الدفع نقداً عند الاستلام.');
         return;
       }
 
       if (isCreditExhausted) {
-        setError('رصيدك الائتماني مستنفد بالكامل (0 ج.م). يرجى اختيار الدفع كاش نقداً عند الاستلام.');
+        setError('رصيدك الائتماني مستنفد بالكامل (0 ج.م). يرجى اختيار الدفع كاش نقداً عند الاستلام أو سداد دفعة كاش تغطي الفاتورة.');
         return;
       }
 
@@ -197,8 +214,8 @@ export default function CheckoutPage() {
 
     try {
       const orderData = {
-        customer_id: profile?.id,
-        customer_code: profile?.customer_code,
+        customer_id: profile ? profile.id : undefined,
+        customer_code: profile ? profile.customer_code : undefined,
         previous_balance: currentDebt,
         current_debt: currentDebt,
         customer_name: customerName.trim(),
@@ -231,7 +248,7 @@ export default function CheckoutPage() {
 
       const data = await res.json().catch(() => ({}));
 
-      if (res.status === 401) {
+      if (res.status === 401 && paymentMethod === 'credit') {
         router.push('/login?redirect=/checkout');
         return;
       }
@@ -262,6 +279,39 @@ export default function CheckoutPage() {
           <h1 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white">إتمام طلب التوريد</h1>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">تأكيد بيانات المنشأة ومقر التسليم واختيار طريقة السداد</p>
         </div>
+
+        {/* Minimum Order Warning */}
+        {isBelowMinOrder && (
+          <div className="p-4 bg-amber-50 dark:bg-amber-950/70 border-2 border-amber-300 dark:border-amber-800 text-amber-950 dark:text-amber-200 rounded-2xl flex items-start gap-3 text-xs sm:text-sm font-bold shadow-sm">
+            <AlertTriangle className="w-5 h-5 shrink-0 text-amber-600 dark:text-amber-400 mt-0.5" />
+            <div>
+              <p className="font-black text-sm sm:text-base">تنبيه الحد الأدنى للطلب لتجار الجملة: {MIN_ORDER_AMOUNT.toLocaleString('ar-EG')} ج.م</p>
+              <p className="text-xs font-normal text-amber-800 dark:text-amber-300 mt-1">
+                إجمالي سلتك الحالي ({total.toLocaleString('ar-EG')} ج.م) أقل من الحد الأدنى. متبقي <strong className="font-mono font-bold">{(MIN_ORDER_AMOUNT - total).toLocaleString('ar-EG')} ج.م</strong> لتتمكن من إرسال الطلب.
+              </p>
+              <Link href="/products" className="inline-block mt-2 text-xs font-bold underline text-amber-900 dark:text-amber-100 hover:opacity-80">
+                ← تصفح بضائع الجملة لإضافة أصناف أخرى
+              </Link>
+            </div>
+          </div>
+        )}
+
+        {/* Guest Notification if not logged in */}
+        {!profile && !loading && (
+          <div className="p-4 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 text-blue-900 dark:text-blue-200 rounded-2xl flex items-center justify-between gap-3 text-xs sm:text-sm">
+            <div className="flex items-center gap-2">
+              <Info className="w-5 h-5 shrink-0 text-blue-600 dark:text-blue-400" />
+              <span>أنت تطلب كـ <strong>زائر جديد (دفع كاش)</strong>. هل تمتلك حساب تاجر مسجل؟</span>
+            </div>
+            <Link
+              href="/login?redirect=/checkout"
+              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs flex items-center gap-1 shrink-0 transition-colors"
+            >
+              <LogIn className="w-3.5 h-3.5" />
+              <span>تسجيل الدخول</span>
+            </Link>
+          </div>
+        )}
 
         {error && (
           <div className="p-4 bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-300 rounded-2xl flex items-center gap-3 text-sm font-bold shadow-sm">
@@ -438,70 +488,90 @@ export default function CheckoutPage() {
               </div>
             </label>
 
-            {isCreditAllowed ? (
-              isCreditExhausted ? (
-                <div className="p-4 rounded-2xl border-2 border-red-200 dark:border-red-900 bg-red-50/50 dark:bg-red-950/30">
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-red-100 dark:bg-red-900/60 flex items-center justify-center text-red-600 dark:text-red-400 shrink-0">
-                      <ShieldAlert className="w-5 h-5" />
+            {profile ? (
+              isCreditAllowed ? (
+                isCreditExhausted ? (
+                  <div className="p-4 rounded-2xl border-2 border-red-200 dark:border-red-900 bg-red-50/50 dark:bg-red-950/30">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-red-100 dark:bg-red-900/60 flex items-center justify-center text-red-600 dark:text-red-400 shrink-0">
+                        <ShieldAlert className="w-5 h-5" />
+                      </div>
+                      <div className="flex-1">
+                        <div className="flex justify-between items-center flex-wrap gap-1">
+                          <span className="font-bold text-xs text-red-900 dark:text-red-200">الدفع الآجل (رصيدك الائتماني مستنفد بالكامل)</span>
+                          <span className="text-[10px] bg-red-100 dark:bg-red-900/60 text-red-700 dark:text-red-300 px-2 py-0.5 rounded font-bold font-mono">0 ج.م متاح</span>
+                        </div>
+                        <span className="text-[11px] text-red-600 dark:text-red-400 block mt-0.5">
+                          الحد الائتماني: {formatPriceShort(creditLimit)} — المديونية الحالية: {formatPriceShort(currentDebt)}. يرجى السداد أو اختيار الدفع كاش.
+                        </span>
+                      </div>
                     </div>
+                  </div>
+                ) : (
+                  <label 
+                    onClick={() => setPaymentMethod('credit')}
+                    className={`flex items-center gap-4 p-4 rounded-2xl border-2 cursor-pointer transition-all ${
+                      paymentMethod === 'credit' 
+                        ? 'border-orange-500 bg-orange-50/50 dark:bg-orange-950/40 text-orange-950 dark:text-orange-200 shadow-sm' 
+                        : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/60'
+                    }`}
+                  >
+                    <input 
+                      type="radio" 
+                      name="payment_method" 
+                      value="credit" 
+                      checked={paymentMethod === 'credit'} 
+                      onChange={() => setPaymentMethod('credit')}
+                      className="w-4 h-4 text-orange-600"
+                    />
+                    <CreditCard className="w-6 h-6 text-orange-600 dark:text-orange-400" />
                     <div className="flex-1">
                       <div className="flex justify-between items-center flex-wrap gap-1">
-                        <span className="font-bold text-xs text-red-900 dark:text-red-200">الدفع الآجل (رصيدك الائتماني مستنفد بالكامل)</span>
-                        <span className="text-[10px] bg-red-100 dark:bg-red-900/60 text-red-700 dark:text-red-300 px-2 py-0.5 rounded font-bold font-mono">0 ج.م متاح</span>
+                        <span className="font-black text-sm block">دفع آجل (حساب تاجر معتمد)</span>
+                        <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-950/60 px-2 py-0.5 rounded-lg border border-emerald-200 dark:border-emerald-800">
+                          رصيد متاح: {formatPriceShort(availableCredit)}
+                        </span>
                       </div>
-                      <span className="text-[11px] text-red-600 dark:text-red-400 block mt-0.5">
-                        الحد الائتماني: {formatPriceShort(creditLimit)} — المديونية الحالية: {formatPriceShort(currentDebt)}. يرجى السداد أو اختيار الدفع كاش.
+                      <span className="text-xs text-slate-500 dark:text-slate-400 block mt-0.5">
+                        الحد الائتماني: {formatPriceShort(creditLimit)} — المديونية الحالية: {formatPriceShort(currentDebt)}
+                      </span>
+                    </div>
+                  </label>
+                )
+              ) : (
+                <div className="p-4 rounded-2xl border-2 border-slate-200 dark:border-slate-800 bg-slate-100/70 dark:bg-slate-800/40 opacity-60 cursor-not-allowed">
+                  <div className="flex items-center gap-3">
+                    <div className="w-9 h-9 rounded-xl bg-slate-200 dark:bg-slate-700 flex items-center justify-center text-slate-500 shrink-0">
+                      <Lock className="w-5 h-5 text-slate-500 dark:text-slate-400" />
+                    </div>
+                    <div className="flex-1">
+                      <span className="font-bold text-xs text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                        <span>الدفع الآجل (غير مفعل)</span>
+                        <span className="text-[10px] bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 px-1.5 py-0.5 rounded font-mono font-semibold">مغلق</span>
+                      </span>
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400 block mt-0.5">
+                        خاصية الآجل غير مفعلة لحسابك، يرجى التواصل مع إدارة الفرماوي جروب لتفعيل الحد الائتماني
                       </span>
                     </div>
                   </div>
                 </div>
-              ) : (
-                <label 
-                  onClick={() => setPaymentMethod('credit')}
-                  className={`flex items-center gap-4 p-4 rounded-2xl border-2 cursor-pointer transition-all ${
-                    paymentMethod === 'credit' 
-                      ? 'border-orange-500 bg-orange-50/50 dark:bg-orange-950/40 text-orange-950 dark:text-orange-200 shadow-sm' 
-                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800/60'
-                  }`}
-                >
-                  <input 
-                    type="radio" 
-                    name="payment_method" 
-                    value="credit" 
-                    checked={paymentMethod === 'credit'} 
-                    onChange={() => setPaymentMethod('credit')}
-                    className="w-4 h-4 text-orange-600"
-                  />
-                  <CreditCard className="w-6 h-6 text-orange-600 dark:text-orange-400" />
-                  <div className="flex-1">
-                    <div className="flex justify-between items-center flex-wrap gap-1">
-                      <span className="font-black text-sm block">دفع آجل (حساب تاجر معتمد)</span>
-                      <span className="text-[11px] font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-950/60 px-2 py-0.5 rounded-lg border border-emerald-200 dark:border-emerald-800">
-                        رصيد متاح: {formatPriceShort(availableCredit)}
-                      </span>
-                    </div>
-                    <span className="text-xs text-slate-500 dark:text-slate-400 block mt-0.5">
-                      الحد الائتماني: {formatPriceShort(creditLimit)} — المديونية الحالية: {formatPriceShort(currentDebt)}
-                    </span>
-                  </div>
-                </label>
               )
             ) : (
-              <div className="p-4 rounded-2xl border-2 border-slate-200 dark:border-slate-800 bg-slate-100/70 dark:bg-slate-800/40 opacity-60 cursor-not-allowed">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-slate-200 dark:bg-slate-700 flex items-center justify-center text-slate-500 shrink-0">
-                    <Lock className="w-5 h-5 text-slate-500 dark:text-slate-400" />
+              <div className="p-4 rounded-2xl border-2 border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <Lock className="w-5 h-5 text-slate-400" />
+                    <div>
+                      <span className="font-bold text-xs text-slate-700 dark:text-slate-300 block">دفع آجل (حساب تاجر معتمد)</span>
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400">يتطلب تسجيل الدخول بحساب تاجر معتمد ومفعل له الائتمان</span>
+                    </div>
                   </div>
-                  <div className="flex-1">
-                    <span className="font-bold text-xs text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
-                      <span>الدفع الآجل (غير مفعل)</span>
-                      <span className="text-[10px] bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 px-1.5 py-0.5 rounded font-mono font-semibold">مغلق</span>
-                    </span>
-                    <span className="text-[11px] text-slate-500 dark:text-slate-400 block mt-0.5">
-                      خاصية الآجل غير مفعلة لحسابك، يرجى التواصل مع إدارة الفرماوي جروب لتفعيل الحد الائتماني
-                    </span>
-                  </div>
+                  <Link
+                    href="/login?redirect=/checkout"
+                    className="text-xs font-bold text-brand-600 dark:text-emerald-400 hover:underline shrink-0"
+                  >
+                    تسجيل الدخول
+                  </Link>
                 </div>
               </div>
             )}
@@ -511,29 +581,41 @@ export default function CheckoutPage() {
             <div className="p-4 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-200 dark:border-slate-700 space-y-3 mt-4">
               <div>
                 <label className="block text-xs font-bold text-slate-800 dark:text-slate-200 mb-1">
-                  المبلغ المدفوع كاش الآن (عربون أو دفعة تحت الحساب)
+                  المبلغ المدفوع كاش الآن (عربون أو سداد تحت الحساب أو سداد مديونية قديمة)
                 </label>
                 <input 
                   type="number" 
                   min="0"
-                  max={total}
                   step="50"
                   value={paidAmount}
                   onChange={(e) => setPaidAmount(e.target.value)}
                   placeholder="0"
                   className="w-full p-2.5 border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 rounded-xl text-sm font-bold text-slate-900 dark:text-white font-mono focus:outline-none focus:border-brand-500"
                 />
-                <p className="text-[11px] text-slate-400 mt-1">
-                  أدخل 0 إذا كنت ترغب في ترحيل إجمالي الفاتورة كاملاً على الحساب الآجل.
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                  إذا كان المبلغ المدفوع أكبر من إجمالي الفاتورة، سيتم تلقائياً خصم الزيادة من مديونيتك السابقة عند اكتمال الطلب.
                 </p>
               </div>
 
-              <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between items-center text-xs">
-                <span className="text-slate-600 dark:text-slate-400 font-bold">المتبقي الذي سيرحل للآجل:</span>
-                <span className="text-sm font-black text-orange-700 dark:text-orange-400 font-mono">
-                  {formatPriceShort(remainingCredit)}
-                </span>
-              </div>
+              {surplusPayment > 0 ? (
+                <div className="p-3 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-800 rounded-xl text-xs text-emerald-900 dark:text-emerald-200 font-bold space-y-1">
+                  <div className="flex justify-between items-center">
+                    <span>قيمة الفاتورة الحالية:</span>
+                    <span className="font-mono text-slate-800 dark:text-slate-100 font-black">{formatPriceShort(total)} (مسددة بالكامل ✓)</span>
+                  </div>
+                  <div className="flex justify-between items-center text-emerald-700 dark:text-emerald-300 pt-1 border-t border-emerald-200 dark:border-emerald-800">
+                    <span>فائض يسدد من المديونية السابقة:</span>
+                    <span className="font-mono font-black text-sm">-{formatPriceShort(surplusPayment)}</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between items-center text-xs">
+                  <span className="text-slate-600 dark:text-slate-400 font-bold">المتبقي الذي سيرحل للآجل:</span>
+                  <span className="text-sm font-black text-orange-700 dark:text-orange-400 font-mono">
+                    {formatPriceShort(remainingCredit)}
+                  </span>
+                </div>
+              )}
 
               {remainingCredit > availableCredit && (
                 <div className="p-3 bg-red-50 dark:bg-red-950/60 border border-red-200 dark:border-red-900 rounded-xl text-xs text-red-700 dark:text-red-300 font-bold flex items-center gap-2">
@@ -548,7 +630,7 @@ export default function CheckoutPage() {
         {/* Submit Button */}
         <button
           onClick={handleCheckout}
-          disabled={submitting || items.length === 0 || (paymentMethod === 'credit' && (isCreditExhausted || remainingCredit > availableCredit))}
+          disabled={submitting || items.length === 0 || isBelowMinOrder || (paymentMethod === 'credit' && (isCreditExhausted || remainingCredit > availableCredit))}
           className="w-full btn-primary py-4 rounded-2xl font-black text-base shadow-xl flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed transition-all"
         >
           {submitting ? (
@@ -556,6 +638,8 @@ export default function CheckoutPage() {
               <Loader2 className="w-5 h-5 animate-spin" />
               <span>جاري تسجيل وإرسال طلب التوريد...</span>
             </>
+          ) : isBelowMinOrder ? (
+            <span>إتمام الطلب (أقل من الحد الأدنى {MIN_ORDER_AMOUNT.toLocaleString('ar-EG')} ج.م)</span>
           ) : (
             <>
               <CheckCircle2 className="w-5 h-5" />

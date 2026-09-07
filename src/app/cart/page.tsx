@@ -3,9 +3,10 @@
 import { useCart } from '@/components/cart/cart-provider';
 import { CustomerLayout } from '@/components/layout/customer-layout';
 import Link from 'next/link';
-import { Trash2, Plus, Minus, ShoppingBag, ArrowRight } from 'lucide-react';
+import { Trash2, Plus, Minus, ShoppingBag, ArrowRight, AlertTriangle } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useNumberFormat } from '@/context/number-format-context';
+import { MIN_ORDER_AMOUNT } from '@/lib/constants';
 
 export default function CartPage() {
   const { items, removeItem, updateQuantity, getCartTotal, clearCart } = useCart();
@@ -178,12 +179,43 @@ export default function CartPage() {
                 </div>
               </div>
 
-              <button 
-                onClick={() => router.push('/checkout')}
-                className="w-full btn-primary py-3.5 rounded-xl font-black text-center shadow-lg transition-all text-sm block"
-              >
-                متابعة وإتمام الفاتورة
-              </button>
+              {getCartTotal() < MIN_ORDER_AMOUNT ? (
+                <div className="space-y-3">
+                  <div className="p-3.5 bg-amber-50 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-800 rounded-2xl text-amber-900 dark:text-amber-200 text-xs font-bold flex items-start gap-2.5 shadow-sm">
+                    <AlertTriangle className="h-5 w-5 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+                    <div>
+                      <p className="font-black text-sm">الحد الأدنى للطلب لتجار الجملة: {MIN_ORDER_AMOUNT.toLocaleString('ar-EG')} ج.م</p>
+                      <p className="text-xs font-normal text-amber-700 dark:text-amber-400 mt-1">
+                        متبقي <strong className="font-mono font-bold text-amber-900 dark:text-amber-200">{(MIN_ORDER_AMOUNT - getCartTotal()).toLocaleString('ar-EG')} ج.م</strong> للوصول للحد الأدنى المطلوب لإتمام الفاتورة.
+                      </p>
+                    </div>
+                  </div>
+
+                  <Link
+                    href="/products"
+                    className="w-full btn-secondary py-3.5 rounded-xl font-bold text-center text-sm block border border-slate-300 dark:border-slate-700"
+                  >
+                    تصفح وإضافة بضائع للوصول للحد الأدنى
+                  </Link>
+
+                  <button 
+                    type="button"
+                    onClick={() => {
+                      alert(`عفواً، الحد الأدنى لقيمة الطلب لتجار الجملة هو ${MIN_ORDER_AMOUNT.toLocaleString('ar-EG')} ج.م.\nمتبقي ${(MIN_ORDER_AMOUNT - getCartTotal()).toLocaleString('ar-EG')} ج.م للوصول للحد الأدنى.`);
+                    }}
+                    className="w-full py-3 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-400 dark:text-slate-500 font-bold text-xs cursor-not-allowed text-center"
+                  >
+                    متابعة وإتمام الفاتورة (أقل من الحد الأدنى)
+                  </button>
+                </div>
+              ) : (
+                <button 
+                  onClick={() => router.push('/checkout')}
+                  className="w-full btn-primary py-3.5 rounded-xl font-black text-center shadow-lg transition-all text-sm block cursor-pointer"
+                >
+                  متابعة وإتمام الفاتورة
+                </button>
+              )}
             </div>
           </div>
         </div>

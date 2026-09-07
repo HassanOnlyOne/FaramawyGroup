@@ -2,12 +2,12 @@
 
 import * as React from 'react';
 import { createPortal } from 'react-dom';
-import { X, Plus, Minus, Trash2, ShoppingBag, Banknote, CreditCard, Lock } from 'lucide-react';
+import { X, Plus, Minus, Trash2, ShoppingBag, Banknote, CreditCard, Lock, AlertTriangle } from 'lucide-react';
 import { useCart } from './cart-provider';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
-import { PAYMENT_METHOD_LABELS } from '@/lib/constants';
+import { PAYMENT_METHOD_LABELS, MIN_ORDER_AMOUNT } from '@/lib/constants';
 import Link from 'next/link';
 
 export function CartDrawer() {
@@ -208,11 +208,35 @@ export function CartDrawer() {
               <span className="font-bold text-slate-700 dark:text-slate-300">إجمالي السلة</span>
               <span className="font-black text-brand-700 dark:text-emerald-400 text-xl font-mono">{total.toLocaleString('ar-EG')} ج.م</span>
             </div>
-            <Link href="/checkout" onClick={toggleCart}>
-              <Button variant="primary" size="lg" className="w-full btn-accent text-base">
-                إتمام الطلب
-              </Button>
-            </Link>
+
+            {total < MIN_ORDER_AMOUNT ? (
+              <div className="space-y-2">
+                <div className="p-3 bg-amber-50 dark:bg-amber-950/70 border border-amber-300 dark:border-amber-800 rounded-xl text-amber-900 dark:text-amber-200 text-xs font-bold flex items-start gap-2 shadow-sm">
+                  <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+                  <div>
+                    <p className="leading-snug">الحد الأدنى للطلب لتجار الجملة هو {MIN_ORDER_AMOUNT.toLocaleString('ar-EG')} ج.م</p>
+                    <p className="text-[11px] font-normal text-amber-700 dark:text-amber-400 mt-1">
+                      متبقي <strong className="font-mono font-bold text-amber-900 dark:text-amber-200">{(MIN_ORDER_AMOUNT - total).toLocaleString('ar-EG')} ج.م</strong> للوصول للحد الأدنى لإتمام الطلب.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    alert(`عفواً، الحد الأدنى لقيمة الطلب لتجار الجملة هو ${MIN_ORDER_AMOUNT.toLocaleString('ar-EG')} ج.م.\nمتبقي ${(MIN_ORDER_AMOUNT - total).toLocaleString('ar-EG')} ج.م للوصول للحد الأدنى.`);
+                  }}
+                  className="w-full py-3 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-500 dark:text-slate-400 font-bold text-sm cursor-not-allowed text-center"
+                >
+                  إتمام الطلب (أقل من الحد الأدنى)
+                </button>
+              </div>
+            ) : (
+              <Link href="/checkout" onClick={toggleCart}>
+                <Button variant="primary" size="lg" className="w-full btn-accent text-base">
+                  إتمام الطلب
+                </Button>
+              </Link>
+            )}
           </div>
         )}
       </div>

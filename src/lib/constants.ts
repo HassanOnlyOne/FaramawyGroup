@@ -7,6 +7,8 @@ export const BRAND = {
   defaultStore: { code: '1', name: 'المخزن الرئيسي' },
 };
 
+export const MIN_ORDER_AMOUNT = 20000;
+
 export const formatPrice = (price: number): string => {
   return `${price.toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ج.م`;
 };

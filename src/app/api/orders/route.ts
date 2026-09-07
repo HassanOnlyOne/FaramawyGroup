@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { calculateTieredPrice } from '@/lib/pricing';
 import { logAction } from '@/lib/audit';
+import { MIN_ORDER_AMOUNT } from '@/lib/constants';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -42,6 +43,33 @@ async function getNextInvoiceNumber(adminClient: any, supabase: any): Promise<st
   } catch {
     return '10000';
   }
+}
+
+async function getNextCustomerCode(adminClient: any, supabase: any): Promise<string> {
+  try {
+    const { data: profiles } = await adminClient
+      .from('profiles')
+      .select('customer_code')
+      .order('created_at', { ascending: false })
+      .limit(200);
+
+    let maxCode = 999;
+    if (profiles && profiles.length > 0) {
+      for (const prof of profiles) {
+        const num = parseInt(String(prof.customer_code || '').replace(/\D/g, ''), 10);
+        if (!isNaN(num) && num >= 1000 && num < 999999) {
+          if (num > maxCode) maxCode = num;
+        }
+      }
+    }
+    return String(maxCode + 1);
+  } catch {
+    return '1000';
+  }
+}
+
+function contactPhoneClean(p: string) {
+  return String(p || '').replace(/\D/g, '');
 }
 
 // GET: List orders
@@ -134,24 +162,69 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'الطلب يجب أن يحتوي على منتجات' }, { status: 400 });
     }
 
-    // Determine customer_id
-    let customerId = user?.id || passedCustomerId;
+    const method = (payment_method === 'credit' || payment_method === 'آجل' || payment_method === 'credit_payment') ? 'credit' : 'cash';
+
+    // 1. Determine customer_id (STRICT: no arbitrary limit(1) fallback)
+    let customerId: string | null = null;
     let customerProfile: any = null;
 
-    if (customerId) {
-      const { data: prof } = await adminClient.from('profiles').select('*').eq('id', customerId).maybeSingle();
+    if (user) {
+      customerId = user.id;
+      const { data: prof } = await adminClient.from('profiles').select('*').eq('id', user.id).maybeSingle();
       customerProfile = prof;
     } else {
-      const { data: firstProf } = await adminClient.from('profiles').select('*').limit(1).maybeSingle();
-      if (firstProf) {
-        customerId = firstProf.id;
-        customerProfile = firstProf;
-      } else {
-        customerId = crypto.randomUUID();
+      // Guest order
+      if (method === 'credit') {
+        return NextResponse.json({
+          error: 'عفواً، خاصية الشراء بالدفع الآجل تتطلب تسجيل الدخول بحساب تاجر معتمد ومفعل له الائتمان'
+        }, { status: 401 });
+      }
+
+      const cleanPhone = contactPhoneClean(contact_phone);
+      if (cleanPhone) {
+        const { data: existingProf } = await adminClient
+          .from('profiles')
+          .select('*')
+          .eq('phone', cleanPhone)
+          .maybeSingle();
+
+        if (existingProf) {
+          customerId = existingProf.id;
+          customerProfile = existingProf;
+        }
+      }
+
+      if (!customerId) {
+        const newGuestId = crypto.randomUUID();
+        const nextCustCode = await getNextCustomerCode(adminClient, supabase);
+        const guestProfile = {
+          id: newGuestId,
+          full_name: customer_name?.trim() || 'عميل جديد',
+          store_name: store_name?.trim() || customer_name?.trim() || 'متجر جديد',
+          phone: cleanPhone || null,
+          address: delivery_address || shipping_address || '',
+          role: 'customer',
+          customer_code: nextCustCode,
+          credit_limit: 0,
+          current_debt: 0,
+          previous_balance: 0,
+          is_credit_enabled: false,
+          credit_enabled: false,
+          created_at: new Date().toISOString()
+        };
+
+        try {
+          await adminClient.from('profiles').insert([guestProfile]);
+        } catch (e) {
+          console.error('Failed to insert guest profile:', e);
+        }
+
+        customerId = newGuestId;
+        customerProfile = guestProfile;
       }
     }
 
-    // 1. Validate requested quantity against stock limit and check if product is paused (NO stock reduction)
+    // 2. Validate requested quantity against stock limit and check if product is paused
     const aggregatedQty = new Map<string, number>();
     for (const item of items) {
       const pId = item.product_id || item.product?.id || item.id;
@@ -232,20 +305,28 @@ export async function POST(req: NextRequest) {
     const discount = 0;
     const calculatedTotal = passedTotal !== undefined ? Number(passedTotal) : (total_amount ? Number(total_amount) : (subtotal - discount));
     const total = Number(calculatedTotal);
+
+    // 3. Wholesale Minimum Order Amount Validation (20,000 EGP)
+    if (total < MIN_ORDER_AMOUNT) {
+      return NextResponse.json({
+        error: `عفواً، الحد الأدنى لقيمة الطلب لتجار الجملة هو ${MIN_ORDER_AMOUNT.toLocaleString('ar-EG')} ج.م. إجمالي طلبك الحالي: ${total.toLocaleString('ar-EG')} ج.م`
+      }, { status: 400 });
+    }
     
     const prevBalance = Number(customerProfile?.current_debt !== undefined && customerProfile?.current_debt !== null ? customerProfile.current_debt : (customerProfile?.previous_balance || 0));
-    const method = (payment_method === 'credit' || payment_method === 'آجل' || payment_method === 'credit_payment') ? 'credit' : 'cash';
 
-    // Calculate finalPaid and finalRemaining
+    // 4. Calculate finalPaid, finalRemaining, and Surplus Payment
     const finalPaid = method === 'cash' 
       ? total 
-      : Math.min(total, Math.max(0, Number(paid_amount || 0)));
+      : Math.max(0, Number(paid_amount || 0));
     
     const finalRemaining = method === 'cash' 
       ? 0 
-      : Math.max(0, total - finalPaid);
+      : (finalPaid >= total ? 0 : Math.max(0, total - finalPaid));
 
-    // 2. Strict Credit Validation: check if remaining credit exceeds available credit
+    const surplusDebtPayment = (method === 'credit' && finalPaid > total) ? (finalPaid - total) : 0;
+
+    // 5. Strict Credit Validation: check if remaining credit exceeds available credit
     if (method === 'credit') {
       const creditLimit = Number(customerProfile?.credit_limit || 0);
       const currentDebt = Number(customerProfile?.current_debt !== undefined && customerProfile?.current_debt !== null ? customerProfile.current_debt : (customerProfile?.previous_balance || 0));
@@ -259,14 +340,18 @@ export async function POST(req: NextRequest) {
 
       const availableCredit = Math.max(0, creditLimit - currentDebt);
 
-      if (availableCredit <= 0 || finalRemaining > availableCredit) {
+      if (finalRemaining > availableCredit) {
         return NextResponse.json({
           error: 'لا يمكن إتمام الطلب، المتبقي الآجل يتجاوز رصيدك الائتماني المتاح'
         }, { status: 400 });
       }
     }
 
-    const finalNotes = customer_notes || order_notes || '';
+    let finalNotes = customer_notes || order_notes || '';
+    if (surplusDebtPayment > 0) {
+      const noteSurplus = `[دفعة كاش مقدمة ${finalPaid} ج.م تتضمن سداد ${surplusDebtPayment} ج.م من المديونية السابقة]`;
+      finalNotes = finalNotes ? `${finalNotes} ${noteSurplus}` : noteSurplus;
+    }
 
     // Pure sequential numeric invoice/order number starting from 10000
     const nextInvoiceNumber = await getNextInvoiceNumber(adminClient, supabase);
@@ -291,13 +376,9 @@ export async function POST(req: NextRequest) {
       previous_balance: prevBalance,
       paid_amount: finalPaid,
       remaining_amount: finalRemaining,
-      current_balance: method === 'credit' ? (prevBalance + finalRemaining) : prevBalance,
+      current_balance: method === 'credit' ? Math.max(0, prevBalance + finalRemaining - surplusDebtPayment) : prevBalance,
       stock_deducted: false
     };
-
-    function contactPhoneClean(p: string) {
-      return String(p || '').replace(/\D/g, '');
-    }
 
     // Clean undefined fields
     Object.keys(baseOrderPayload).forEach(k => {
@@ -353,7 +434,7 @@ export async function POST(req: NextRequest) {
         previous_balance: prevBalance,
         paid_amount: finalPaid,
         remaining_amount: finalRemaining,
-        current_balance: method === 'credit' ? (prevBalance + finalRemaining) : prevBalance,
+        current_balance: method === 'credit' ? Math.max(0, prevBalance + finalRemaining - surplusDebtPayment) : prevBalance,
         stock_deducted: false
       };
 
@@ -373,7 +454,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: orderError?.message || 'فشل إرسال الطلب' }, { status: 400 });
     }
 
-    // Insert order items without deducting stock (stock is ONLY deducted when order status is changed to 'completed')
+    // Insert order items
     if (orderItemsToInsert.length > 0) {
       const formattedOrderItems = orderItemsToInsert.map(oi => ({
         id: crypto.randomUUID(),
@@ -384,13 +465,11 @@ export async function POST(req: NextRequest) {
       await adminClient.from('order_items').insert(formattedOrderItems);
     }
 
-    // Pending orders do not add to current_debt (debt is only accrued when order is approved/completed)
-
     // Log in audit log
     await logAction({
       actionType: 'إنشاء طلب جديد',
       category: 'المبيعات والفواتير',
-      details: `تسجيل طلب بيع جديد #${nextInvoiceNumber} للعميل (${customerProfile?.store_name || customerProfile?.full_name || customer_name || customerId}) بإجمالي ${total} ج.م - طريقة الدفع: ${method === 'credit' ? 'أجل' : 'كاش نقدي'}`,
+      details: `تسجيل طلب بيع جديد #${nextInvoiceNumber} للعميل (${customerProfile?.store_name || customerProfile?.full_name || customer_name || customerId}) بإجمالي ${total} ج.م - طريقة الدفع: ${method === 'credit' ? 'أجل' : 'كاش نقدي'}${surplusDebtPayment > 0 ? ` (مسدد دفعة كاش ${finalPaid} ج.م تتضمن سداد ${surplusDebtPayment} ج.م من المديونية السابقة)` : ''}`,
       user: {
         id: user?.id || customerId,
         name: customerProfile?.store_name || customerProfile?.full_name || customer_name || 'عميل المتجر',
