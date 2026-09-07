@@ -465,6 +465,50 @@ export async function POST(req: NextRequest) {
       await adminClient.from('order_items').insert(formattedOrderItems);
     }
 
+    // If customer paid surplus cash over total in a credit order, record payment voucher & update profile debt immediately
+    if (method === 'credit' && surplusDebtPayment > 0 && customerId) {
+      const recNum = `REC-${Date.now().toString().slice(-6)}`;
+      const surplusPayload: any = {
+        id: crypto.randomUUID(),
+        customer_id: customerId,
+        customer_code: customerProfile?.customer_code || customer_code,
+        amount: surplusDebtPayment,
+        receipt_number: recNum,
+        payment_method: 'cash',
+        notes: `سداد مديونية سابقة من مقدم طلب الفاتورة #${nextInvoiceNumber}`,
+        payment_date: new Date().toISOString(),
+        created_at: new Date().toISOString()
+      };
+
+      try {
+        const { error: insErr } = await adminClient.from('customer_payments').insert([surplusPayload]);
+        if (insErr) {
+          delete surplusPayload.receipt_number;
+          await adminClient.from('customer_payments').insert([surplusPayload]);
+        }
+      } catch (errIns) {
+        console.warn('Surplus customer_payments insert error:', errIns);
+      }
+
+      try {
+        await adminClient.from('payments').insert([surplusPayload]);
+      } catch {}
+
+      const newCustomerDebt = Math.max(0, prevBalance - surplusDebtPayment);
+      try {
+        await adminClient.from('profiles').update({
+          current_debt: newCustomerDebt,
+          previous_balance: newCustomerDebt,
+          debt_balance: newCustomerDebt
+        }).eq('id', customerId);
+      } catch {
+        await adminClient.from('profiles').update({
+          current_debt: newCustomerDebt,
+          previous_balance: newCustomerDebt
+        }).eq('id', customerId);
+      }
+    }
+
     // Log in audit log
     await logAction({
       actionType: 'إنشاء طلب جديد',

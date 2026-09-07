@@ -108,11 +108,11 @@ export async function POST(request: NextRequest) {
 
     const totalDebit = (clientOrders || []).reduce((acc: number, o: any) => {
       if (['pending', 'cancelled', 'returned'].includes(o.status)) return acc;
-      const isCredit = o.payment_method === 'credit';
+      const isCredit = o.payment_method === 'credit' || o.payment_method === 'آجل';
       const tot = Number(o.total ?? o.total_amount ?? 0);
       const paid = Number(o.paid_amount || 0);
-      const rem = Number(o.remaining_amount ?? (isCredit ? Math.max(0, tot - paid) : 0));
-      return acc + (rem > 0 ? rem : (isCredit ? tot : 0));
+      const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, tot - paid) : 0));
+      return acc + rem;
     }, 0);
 
     const totalCredit = (clientPayments || []).reduce((acc: number, p: any) => acc + Number(p.amount || 0), 0);

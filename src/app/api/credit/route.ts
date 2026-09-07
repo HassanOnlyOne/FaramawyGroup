@@ -99,17 +99,17 @@ export async function GET(req: NextRequest) {
 
     // حساب إجمالي المتبقي من فواتير الآجل
     const grossApprovedDebt = approvedActiveOrders.reduce((sum: number, o: any) => {
-      const isCredit = o.payment_method === 'credit';
+      const isCredit = o.payment_method === 'credit' || o.payment_method === 'آجل';
       const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
       const ordPaid = Number(o.paid_amount || 0);
       const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, ordTotal - ordPaid) : 0));
       
       if (!isCredit && rem <= 0) return sum;
-      return sum + (rem > 0 ? rem : ordTotal);
+      return sum + rem;
     }, 0);
 
     const reservedCredit = pendingOrders.reduce((sum: number, o: any) => {
-      const isCredit = o.payment_method === 'credit';
+      const isCredit = o.payment_method === 'credit' || o.payment_method === 'آجل';
       const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
       const ordPaid = Number(o.paid_amount || 0);
       const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, ordTotal - ordPaid) : 0));
@@ -123,14 +123,14 @@ export async function GET(req: NextRequest) {
 
     const creditWithdrawals = approvedActiveOrders
       .filter((o: any) => {
-        const isCredit = o.payment_method === 'credit';
+        const isCredit = o.payment_method === 'credit' || o.payment_method === 'آجل';
         const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
         const ordPaid = Number(o.paid_amount || 0);
         const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, ordTotal - ordPaid) : 0));
         return isCredit || rem > 0;
       })
       .map((o: any) => {
-        const isCredit = o.payment_method === 'credit';
+        const isCredit = o.payment_method === 'credit' || o.payment_method === 'آجل';
         const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
         const ordPaid = Number(o.paid_amount || 0);
         const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, ordTotal - ordPaid) : 0));
@@ -141,7 +141,7 @@ export async function GET(req: NextRequest) {
           invoice_no: invNumber,
           total: ordTotal,
           paid_amount: ordPaid,
-          remaining_amount: rem > 0 ? rem : ordTotal,
+          remaining_amount: rem,
           payment_method: 'credit',
           status: o.status || 'completed',
           created_at: o.created_at

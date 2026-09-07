@@ -73,30 +73,13 @@ export async function GET(request: NextRequest) {
     const formattedList = safeList.map((c: any, index: number) => {
       const cleanCode = c.customer_code ? String(c.customer_code).replace(/\D/g, '') : '';
       
-      const custOrders = allOrders.filter((o: any) => o.customer_id === c.id);
-      const custPayments = allPayments.filter((p: any) => p.customer_id === c.id);
-      const totalPaymentsSum = custPayments.reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
-
-      const totalApprovedCreditDebt = custOrders
-        .filter((o: any) => !['pending', 'cancelled', 'returned'].includes(o.status))
-        .reduce((sum: number, o: any) => {
-          const isCredit = o.payment_method === 'credit';
-          const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
-          const ordPaid = Number(o.paid_amount || 0);
-          const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, ordTotal - ordPaid) : 0));
-          if (!isCredit && rem <= 0) return sum;
-          return sum + rem;
-        }, 0);
-
-      const netDebt = totalApprovedCreditDebt > 0 
-        ? Math.max(0, totalApprovedCreditDebt - totalPaymentsSum) 
-        : (custPayments.length > 0 ? 0 : Number(c.current_debt !== undefined && c.current_debt !== null ? c.current_debt : (c.previous_balance || 0)));
+      const directDebt = Number(c.current_debt !== undefined && c.current_debt !== null ? c.current_debt : (c.previous_balance || 0));
 
       return {
         ...c,
         customer_code: cleanCode || String(1000 + index),
-        current_debt: netDebt,
-        previous_balance: netDebt
+        current_debt: directDebt,
+        previous_balance: directDebt
       };
     });
 

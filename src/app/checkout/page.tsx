@@ -38,54 +38,17 @@ export default function CheckoutPage() {
         let currentProf: any = null;
 
         if (user) {
-          const [profRes, ordRes, payRes] = await Promise.all([
-            supabase
-              .from('profiles')
-              .select('id, full_name, store_name, phone, address, credit_limit, current_debt, is_credit_enabled, credit_enabled, customer_code')
-              .eq('id', user.id)
-              .maybeSingle(),
-            supabase
-              .from('orders')
-              .select('total, total_amount, paid_amount, remaining_amount, payment_method, status')
-              .eq('customer_id', user.id),
-            supabase
-              .from('customer_payments')
-              .select('amount')
-              .eq('customer_id', user.id)
-          ]);
+          const profRes = await supabase
+            .from('profiles')
+            .select('id, full_name, store_name, phone, address, credit_limit, current_debt, previous_balance, is_credit_enabled, credit_enabled, customer_code')
+            .eq('id', user.id)
+            .maybeSingle();
 
           currentProf = profRes.data;
-
-          const orders = ordRes.data || [];
-          const payments = payRes.data || [];
-          const totalPayments = payments.reduce((sum: number, p: any) => sum + (Number(p.amount) || 0), 0);
-
-          const totalApprovedCreditOrders = orders
-            .filter((o: any) => !['pending', 'cancelled', 'returned'].includes(o.status))
-            .reduce((sum: number, o: any) => {
-              const isCredit = o.payment_method === 'credit';
-              const ordTotal = Number(o.total ?? o.total_amount ?? 0);
-              const ordPaid = Number(o.paid_amount || 0);
-              const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, ordTotal - ordPaid) : 0));
-              if (!isCredit && rem <= 0) return sum;
-              return sum + rem;
-            }, 0);
-
-          const calculatedDebt = Math.max(0, totalApprovedCreditOrders - totalPayments);
-
-          if (currentProf) {
-            const dbDebt = Number(currentProf.current_debt || 0);
-            if (orders.length > 0 || payments.length > 0) {
-              currentProf.current_debt = calculatedDebt;
-              if (dbDebt !== calculatedDebt) {
-                supabase.from('profiles').update({ current_debt: calculatedDebt, previous_balance: calculatedDebt }).eq('id', user.id).then(() => {});
-              }
-            }
-          }
         }
 
         if (currentProf) {
-          const debtFromProfile = Number(currentProf.current_debt || 0);
+          const debtFromProfile = Number(currentProf.current_debt !== undefined && currentProf.current_debt !== null ? currentProf.current_debt : (currentProf.previous_balance || 0));
           const limitFromProfile = Number(currentProf.credit_limit || 0);
           const available = Math.max(0, limitFromProfile - debtFromProfile);
 
@@ -142,7 +105,9 @@ export default function CheckoutPage() {
   const remainingCredit = (paymentMethod === 'credit' && isCreditAllowed && !isCreditExhausted) 
     ? (numPaid >= total ? 0 : Math.max(0, total - numPaid)) 
     : 0;
-  const cumulativeTotal = total + currentDebt;
+  const expectedPostOrderDebt = paymentMethod === 'credit'
+    ? Math.max(0, currentDebt + remainingCredit - surplusPayment)
+    : currentDebt;
 
   const isBelowMinOrder = total < MIN_ORDER_AMOUNT;
 
@@ -358,18 +323,54 @@ export default function CheckoutPage() {
                     يُحدد لاحقاً (حسب المسافة والكمية)
                   </span>
                 </div>
-                {currentDebt > 0 && (
-                  <div className="flex justify-between text-red-700 dark:text-red-400 font-bold bg-red-50/60 dark:bg-red-950/40 p-2.5 rounded-xl border border-red-200 dark:border-red-900/50">
-                    <span>+ مديونية حالية مسجلة على حسابك:</span>
-                    <span className="font-black font-mono">{formatPriceShort(currentDebt)}</span>
-                  </div>
+                
+                {paymentMethod === 'credit' ? (
+                  <>
+                    {currentDebt > 0 && (
+                      <div className="flex justify-between text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/60 p-2.5 rounded-xl border border-slate-200 dark:border-slate-700">
+                        <span className="font-medium">+ مديونية سابقة مسجلة على حسابك:</span>
+                        <span className="font-bold font-mono text-red-600 dark:text-red-400">{formatPriceShort(currentDebt)}</span>
+                      </div>
+                    )}
+                    {numPaid > 0 && (
+                      <div className="flex justify-between text-emerald-700 dark:text-emerald-400 font-bold bg-emerald-50/60 dark:bg-emerald-950/40 p-2.5 rounded-xl border border-emerald-200 dark:border-emerald-900/50">
+                        <span>- المدفوع كاش الآن (عربون / سداد):</span>
+                        <span className="font-mono">{formatPriceShort(numPaid)}</span>
+                      </div>
+                    )}
+                    {surplusPayment > 0 && (
+                      <div className="flex justify-between text-emerald-800 dark:text-emerald-300 font-bold bg-emerald-100/70 dark:bg-emerald-950/70 p-2.5 rounded-xl border border-emerald-300 dark:border-emerald-800 text-xs">
+                        <span>✓ فائض مسدد من المديونية السابقة:</span>
+                        <span className="font-mono font-black">-{formatPriceShort(surplusPayment)}</span>
+                      </div>
+                    )}
+                    {remainingCredit > 0 && (
+                      <div className="flex justify-between text-orange-700 dark:text-orange-400 font-bold bg-orange-50/60 dark:bg-orange-950/40 p-2.5 rounded-xl border border-orange-200 dark:border-orange-900/50">
+                        <span>المتبقي المرحل للآجل:</span>
+                        <span className="font-mono">{formatPriceShort(remainingCredit)}</span>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  currentDebt > 0 && (
+                    <div className="flex justify-between text-slate-600 dark:text-slate-400 text-xs bg-slate-50 dark:bg-slate-800/60 p-2 rounded-xl border border-slate-200 dark:border-slate-700">
+                      <span>مديونيتك السابقة (تظل كما هي):</span>
+                      <span className="font-bold font-mono">{formatPriceShort(currentDebt)}</span>
+                    </div>
+                  )
                 )}
+
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-800/60 p-2 rounded-xl border border-slate-200 dark:border-slate-700">
                   ℹ️ مصاريف النقل تحدد وتؤكد هاتفياً مع المندوب وفقاً للمسافة ونوع البضاعة.
                 </p>
+
                 <div className="flex justify-between items-center pt-3 border-t-2 border-slate-200 dark:border-slate-700">
-                  <span className="font-black text-slate-900 dark:text-white text-base">إجمالي الحساب التراكمي المطلوب:</span>
-                  <span className="text-2xl font-black text-brand-700 dark:text-emerald-400 font-mono">{formatPriceShort(cumulativeTotal)}</span>
+                  <span className="font-black text-slate-900 dark:text-white text-base">
+                    {paymentMethod === 'credit' ? 'المديونية المتبقية بعد هذا الطلب:' : 'المطلوب سداده كاش عند الاستلام:'}
+                  </span>
+                  <span className="text-2xl font-black text-brand-700 dark:text-emerald-400 font-mono">
+                    {paymentMethod === 'credit' ? formatPriceShort(expectedPostOrderDebt) : formatPriceShort(total)}
+                  </span>
                 </div>
               </div>
             </>

@@ -23,7 +23,10 @@ export function ElfarmawyInvoice({ order }: InvoiceProps) {
   const paidCash = Number(order.paid_amount || 0);
   const remainingDebt = Number(order.remaining_amount !== undefined && order.remaining_amount !== null ? order.remaining_amount : Math.max(0, invTotal - paidCash));
   const prevBalance = Number(order.previous_balance || order.customer?.previous_balance || 0);
-  const currentBalanceAfter = prevBalance + remainingDebt;
+  const surplusCash = (paidCash > invTotal) ? (paidCash - invTotal) : 0;
+  const currentBalanceAfter = order.current_balance !== undefined && order.current_balance !== null
+    ? Number(order.current_balance)
+    : Math.max(0, prevBalance + remainingDebt - surplusCash);
 
   const invoiceNumber = order.invoice_no || order.order_number || String(order.id).slice(0, 8);
   const cleanInvNum = String(invoiceNumber).replace(/\D/g, '') || invoiceNumber;

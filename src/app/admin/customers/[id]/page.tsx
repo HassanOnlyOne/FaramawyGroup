@@ -209,7 +209,7 @@ export default function CustomerLedgerPage() {
 
   const creditWithdrawals = orders.filter((o: any) => {
     if (['pending', 'cancelled', 'returned'].includes(o.status)) return false;
-    const isCredit = o.payment_method === 'credit';
+    const isCredit = o.payment_method === 'credit' || o.payment_method === 'آجل';
     const tot = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
     const paid = Number(o.paid_amount || 0);
     const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, tot - paid) : 0));
@@ -221,17 +221,24 @@ export default function CustomerLedgerPage() {
   creditWithdrawals.forEach((o: any) => {
     const tot = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
     const paid = Number(o.paid_amount || 0);
-    const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : Math.max(0, tot - paid));
-    const debitAmount = rem > 0 ? rem : tot;
+    const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (o.payment_method === 'credit' ? Math.max(0, tot - paid) : 0));
+    const debitAmount = rem;
 
     const invNo = o.invoice_no || o.order_number || String(o.id).slice(0, 8);
     const cleanInv = String(invNo).replace(/\D/g, '') || invNo;
 
+    let notesStr = `فاتورة توريد بضاعة لحساب الأجل`;
+    if (paid >= tot) {
+      notesStr = `إجمالي الفاتورة ${formatPriceShort(tot)} (مسددة بالكامل كاش ${formatPriceShort(paid)})`;
+    } else if (paid > 0) {
+      notesStr = `إجمالي الفاتورة ${formatPriceShort(tot)} (مدفوع كاش ${formatPriceShort(paid)} والمتبقي ${formatPriceShort(rem)})`;
+    }
+
     statementEvents.push({
       date: new Date(o.created_at),
-      type: 'فاتورة توريد (آجل)',
+      type: debitAmount > 0 ? 'فاتورة توريد (آجل)' : 'فاتورة توريد (مسددة كاش)',
       ref: `فاتورة #${formatNumber(cleanInv)}`,
-      notes: paid > 0 ? `إجمالي الفاتورة ${formatPriceShort(tot)} (مسدد كاش ${formatPriceShort(paid)})` : `فاتورة توريد بضاعة لحساب الأجل`,
+      notes: notesStr,
       debit: debitAmount,
       credit: 0
     });

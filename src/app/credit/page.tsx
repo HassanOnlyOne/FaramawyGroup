@@ -115,8 +115,8 @@ export default function CreditPage() {
   creditWithdrawals.forEach((o: any) => {
     const tot = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
     const paid = Number(o.paid_amount || 0);
-    const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : Math.max(0, tot - paid));
-    const debitAmount = rem > 0 ? rem : tot;
+    const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (o.payment_method === 'credit' ? Math.max(0, tot - paid) : 0));
+    const debitAmount = rem;
 
     statementEvents.push({
       date: new Date(o.created_at),
