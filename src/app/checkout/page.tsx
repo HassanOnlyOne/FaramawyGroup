@@ -30,6 +30,7 @@ export default function CheckoutPage() {
   const [currentDebt, setCurrentDebt] = useState<number>(0);
 
   useEffect(() => {
+    let isMounted = true;
     async function loadData() {
       try {
         const supabase = createClient();
@@ -40,36 +41,59 @@ export default function CheckoutPage() {
           return;
         }
 
-        const profRes = await supabase
-          .from('profiles')
-          .select('id, full_name, store_name, phone, address, credit_limit, current_debt, previous_balance, is_credit_enabled, credit_enabled, customer_code')
-          .eq('id', user.id)
-          .maybeSingle();
+        // 1. Parallel fetch directly from profiles and live /api/credit
+        const [profRes, credRes] = await Promise.all([
+          supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', user.id)
+            .maybeSingle(),
+          fetch(`/api/credit?t=${Date.now()}`, {
+            cache: 'no-store',
+            headers: { 'Cache-Control': 'no-cache' }
+          }).then(r => r.ok ? r.json() : null).catch(() => null)
+        ]);
 
         const currentProf = profRes.data;
 
         if (currentProf) {
-          const debtFromProfile = Number(currentProf.current_debt !== undefined && currentProf.current_debt !== null ? currentProf.current_debt : (currentProf.previous_balance || 0));
-          const limitFromProfile = Number(currentProf.credit_limit || 0);
-          const available = Math.max(0, limitFromProfile - debtFromProfile);
+          let resolvedDebt = Number(currentProf.current_debt !== undefined && currentProf.current_debt !== null ? currentProf.current_debt : (currentProf.previous_balance || 0));
+          let resolvedLimit = Number(currentProf.credit_limit || 0);
+          let resolvedCreditEnabled = currentProf.credit_enabled !== false && currentProf.is_credit_enabled !== false;
 
-          setCurrentDebt(debtFromProfile);
-          setProfile(currentProf);
-          setCustomerName(currentProf.store_name || currentProf.full_name || '');
-          setContactPhone(currentProf.phone || '');
-          setDeliveryAddress(currentProf.address || '');
+          if (credRes && credRes.success) {
+            if (credRes.current_debt !== undefined) resolvedDebt = Number(credRes.current_debt);
+            if (credRes.credit_limit !== undefined) resolvedLimit = Number(credRes.credit_limit);
+            if (credRes.is_credit_enabled !== undefined) resolvedCreditEnabled = Boolean(credRes.is_credit_enabled);
+          }
 
-          const isCreditEligible = Boolean(
-            currentProf.credit_enabled !== false && 
-            currentProf.is_credit_enabled !== false && 
-            limitFromProfile > 0 && 
-            available > 0
-          );
+          const available = Math.max(0, resolvedLimit - resolvedDebt);
 
-          if (!isCreditEligible) {
-            setPaymentMethod('cash');
-          } else {
-            setPaymentMethod('credit');
+          if (isMounted) {
+            setCurrentDebt(resolvedDebt);
+            setProfile({
+              ...currentProf,
+              current_debt: resolvedDebt,
+              previous_balance: resolvedDebt,
+              credit_limit: resolvedLimit,
+              is_credit_enabled: resolvedCreditEnabled,
+              credit_enabled: resolvedCreditEnabled
+            });
+            setCustomerName(currentProf.store_name || currentProf.full_name || '');
+            setContactPhone(currentProf.phone || '');
+            setDeliveryAddress(currentProf.address || '');
+
+            const isCreditEligible = Boolean(
+              resolvedCreditEnabled && 
+              resolvedLimit > 0 && 
+              available > 0
+            );
+
+            if (!isCreditEligible) {
+              setPaymentMethod('cash');
+            } else {
+              setPaymentMethod('credit');
+            }
           }
         } else {
           router.push('/login?redirect=/checkout');
@@ -78,10 +102,11 @@ export default function CheckoutPage() {
       } catch (err) {
         console.error('Checkout load data error:', err);
       } finally {
-        setLoading(false);
+        if (isMounted) setLoading(false);
       }
     }
     loadData();
+    return () => { isMounted = false; };
   }, [setPaymentMethod, router]);
 
   const creditLimit = Number(profile?.credit_limit || 0);
@@ -237,6 +262,49 @@ export default function CheckoutPage() {
       setSubmitting(false);
     }
   };
+
+  if (loading) {
+    return (
+      <CustomerLayout>
+        <div className="max-w-3xl mx-auto py-6 px-4 space-y-6 animate-pulse" dir="rtl">
+          <div>
+            <div className="h-8 bg-slate-200 dark:bg-slate-800 rounded-2xl w-48 mb-2"></div>
+            <div className="h-4 bg-slate-200 dark:bg-slate-800 rounded-xl w-72"></div>
+          </div>
+
+          {/* Skeleton Order Summary */}
+          <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 shadow-sm border border-slate-200 dark:border-slate-800 space-y-4">
+            <div className="h-5 bg-slate-200 dark:bg-slate-800 rounded-xl w-36"></div>
+            <div className="space-y-3">
+              <div className="h-10 bg-slate-100 dark:bg-slate-850 rounded-xl"></div>
+              <div className="h-10 bg-slate-100 dark:bg-slate-850 rounded-xl"></div>
+            </div>
+            <div className="pt-4 border-t border-slate-200 dark:border-slate-800 space-y-2">
+              <div className="h-4 bg-slate-100 dark:bg-slate-850 rounded w-full"></div>
+              <div className="h-4 bg-slate-100 dark:bg-slate-850 rounded w-2/3"></div>
+            </div>
+          </div>
+
+          {/* Skeleton Customer Form */}
+          <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 shadow-sm border border-slate-200 dark:border-slate-800 space-y-4">
+            <div className="h-5 bg-slate-200 dark:bg-slate-800 rounded-xl w-48"></div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="h-12 bg-slate-100 dark:bg-slate-850 rounded-xl"></div>
+              <div className="h-12 bg-slate-100 dark:bg-slate-850 rounded-xl"></div>
+            </div>
+            <div className="h-20 bg-slate-100 dark:bg-slate-850 rounded-xl"></div>
+          </div>
+
+          {/* Skeleton Payment Method */}
+          <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 shadow-sm border border-slate-200 dark:border-slate-800 space-y-4">
+            <div className="h-5 bg-slate-200 dark:bg-slate-800 rounded-xl w-36"></div>
+            <div className="h-16 bg-slate-100 dark:bg-slate-850 rounded-2xl"></div>
+            <div className="h-16 bg-slate-100 dark:bg-slate-850 rounded-2xl"></div>
+          </div>
+        </div>
+      </CustomerLayout>
+    );
+  }
 
   return (
     <CustomerLayout>
