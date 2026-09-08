@@ -304,11 +304,17 @@ export default function AdminOrderDetail() {
   const itemsList = Array.isArray(order.order_items) ? order.order_items : (Array.isArray(order.items) ? order.items : []);
   const totalAmount = Number(order.total !== undefined ? order.total : (order.total_amount || order.subtotal || 0));
   const paidAmountVal = Number(order.paid_amount || 0);
-  const remainingAmountVal = Number(order.remaining_amount !== undefined ? order.remaining_amount : Math.max(0, totalAmount - paidAmountVal));
+  const isCreditOrder = order.payment_method === 'credit' || order.payment_method === 'آجل';
+  const surplusDebtVal = (isCreditOrder && paidAmountVal > totalAmount) ? (paidAmountVal - totalAmount) : 0;
+  const remainingAmountVal = isCreditOrder
+    ? (paidAmountVal >= totalAmount ? 0 : Math.max(0, totalAmount - paidAmountVal))
+    : 0;
   const customerProfile = order.customer || order.profiles || {};
   const deliveryFeeVal = Number(order.delivery_fee || order.shipping_fee || order.shipping_cost || 0);
   const customerPreviousBalance = Number(order.previous_balance !== undefined ? order.previous_balance : (customerProfile.previous_balance || 0));
-  const expectedTotalDebt = customerPreviousBalance + remainingAmountVal;
+  const expectedTotalDebt = isCreditOrder
+    ? Math.max(0, customerPreviousBalance + remainingAmountVal - surplusDebtVal)
+    : customerPreviousBalance;
 
   return (
     <AdminLayout>
@@ -453,8 +459,8 @@ export default function AdminOrderDetail() {
               <div className="space-y-3 text-sm">
                 <div className="flex justify-between items-center">
                   <span className="text-slate-500">طريقة الدفع:</span>
-                  <span className={`px-3 py-1 rounded-full text-xs font-bold ${order.payment_method === 'credit' || remainingAmountVal > 0 ? 'bg-orange-100 text-orange-800 border border-orange-200' : 'bg-emerald-100 text-emerald-800 border border-emerald-200'}`}>
-                    {order.payment_method === 'credit' || remainingAmountVal > 0 ? 'أجل (آجل / مركب)' : 'كاش عند الاستلام'}
+                  <span className={`px-3 py-1 rounded-full text-xs font-bold ${isCreditOrder || remainingAmountVal > 0 ? 'bg-orange-100 text-orange-800 border border-orange-200' : 'bg-emerald-100 text-emerald-800 border border-emerald-200'}`}>
+                    {isCreditOrder || remainingAmountVal > 0 ? 'أجل (حساب تاجر معتمد)' : 'كاش عند الاستلام'}
                   </span>
                 </div>
                 
@@ -462,6 +468,13 @@ export default function AdminOrderDetail() {
                   <div className="flex justify-between text-emerald-700 font-bold bg-emerald-50 p-2.5 rounded-xl border border-emerald-200">
                     <span>المدفوع نقداً مقدماً (كاش):</span>
                     <span className="font-mono">{formatPriceShort(paidAmountVal)}</span>
+                  </div>
+                )}
+
+                {surplusDebtVal > 0 && (
+                  <div className="flex justify-between text-emerald-800 font-bold bg-emerald-100/80 p-2.5 rounded-xl border border-emerald-300 text-xs">
+                    <span>✓ سداد من المديونية السابقة:</span>
+                    <span className="font-mono font-black">-{formatPriceShort(surplusDebtVal)}</span>
                   </div>
                 )}
 
@@ -474,10 +487,19 @@ export default function AdminOrderDetail() {
                   <span className="font-bold text-slate-900 font-mono">+{formatPriceShort(totalAmount)}</span>
                 </div>
                 
-                <div className="flex justify-between text-orange-700 font-bold bg-orange-50/60 p-2 rounded-lg border border-orange-200">
-                  <span>المبلغ الأجل المتبقي من الفاتورة:</span>
-                  <span className="font-mono">+{formatPriceShort(remainingAmountVal)}</span>
-                </div>
+                {isCreditOrder && (
+                  remainingAmountVal > 0 ? (
+                    <div className="flex justify-between text-orange-700 font-bold bg-orange-50/60 p-2 rounded-lg border border-orange-200">
+                      <span>المبلغ الآجل المتبقي من الفاتورة:</span>
+                      <span className="font-mono">+{formatPriceShort(remainingAmountVal)}</span>
+                    </div>
+                  ) : (
+                    <div className="flex justify-between text-emerald-700 font-bold bg-emerald-50/60 p-2 rounded-lg border border-emerald-200">
+                      <span>المبلغ الآجل المتبقي من الفاتورة:</span>
+                      <span className="font-mono">0 ج.م (مسددة بالكامل ✓)</span>
+                    </div>
+                  )
+                )}
 
                 <div className="flex justify-between mt-2 pt-2 border-t border-slate-200 items-center">
                   <span className="text-slate-900 font-black text-sm">الرصيد المتوقع بعد الفاتورة:</span>

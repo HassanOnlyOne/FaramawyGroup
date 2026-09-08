@@ -30,11 +30,15 @@ export async function middleware(request: NextRequest) {
   // Refresh auth session quickly without any database queries
   const { data: { user } } = await supabase.auth.getUser();
 
-  // Protect unauthenticated admin routes
-  if (request.nextUrl.pathname.startsWith('/admin') && !user) {
+  // Protect unauthenticated checkout and admin routes
+  const isCheckoutRoute = request.nextUrl.pathname === '/checkout' || request.nextUrl.pathname.startsWith('/checkout/');
+  const isAdminRoute = request.nextUrl.pathname.startsWith('/admin');
+
+  if ((isCheckoutRoute || isAdminRoute) && !user) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = '/login';
     loginUrl.searchParams.set('redirect', request.nextUrl.pathname);
+    loginUrl.searchParams.set('returnUrl', request.nextUrl.pathname);
     return NextResponse.redirect(loginUrl);
   }
 

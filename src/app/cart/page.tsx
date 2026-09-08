@@ -210,7 +210,20 @@ export default function CartPage() {
                 </div>
               ) : (
                 <button 
-                  onClick={() => router.push('/checkout')}
+                  onClick={async () => {
+                    try {
+                      const { createClient } = await import('@/lib/supabase/client');
+                      const supabase = createClient();
+                      const { data: { user } } = await supabase.auth.getUser();
+                      if (!user) {
+                        router.push('/login?redirect=/checkout');
+                      } else {
+                        router.push('/checkout');
+                      }
+                    } catch {
+                      router.push('/checkout');
+                    }
+                  }}
                   className="w-full btn-primary py-3.5 rounded-xl font-black text-center shadow-lg transition-all text-sm block cursor-pointer"
                 >
                   متابعة وإتمام الفاتورة

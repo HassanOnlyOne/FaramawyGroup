@@ -76,9 +76,12 @@ function LoginForm() {
       });
 
       const role = data.role || data.profile?.role || 'customer';
+      const redirectUrl = searchParams.get('redirect') || searchParams.get('returnUrl');
 
-      // Role Redirection
-      if (['admin', 'owner', 'super_owner', 'staff', 'manager'].includes(role)) {
+      // Role and Redirect Handling
+      if (redirectUrl && redirectUrl.startsWith('/') && !redirectUrl.startsWith('//')) {
+        router.push(redirectUrl);
+      } else if (['admin', 'owner', 'super_owner', 'staff', 'manager'].includes(role)) {
         router.push('/admin');
       } else {
         router.push('/');

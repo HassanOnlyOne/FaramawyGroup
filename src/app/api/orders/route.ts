@@ -164,64 +164,21 @@ export async function POST(req: NextRequest) {
 
     const method = (payment_method === 'credit' || payment_method === 'آجل' || payment_method === 'credit_payment') ? 'credit' : 'cash';
 
-    // 1. Determine customer_id (STRICT: no arbitrary limit(1) fallback)
-    let customerId: string | null = null;
-    let customerProfile: any = null;
+    // 1. Determine customer_id (STRICT: Authentication required, no guest checkouts)
+    if (!user) {
+      return NextResponse.json({
+        error: 'عفواً، يجب تسجيل الدخول بحساب تاجر مسجل لإتمام طلب التوريد'
+      }, { status: 401 });
+    }
 
-    if (user) {
-      customerId = user.id;
-      const { data: prof } = await adminClient.from('profiles').select('*').eq('id', user.id).maybeSingle();
-      customerProfile = prof;
-    } else {
-      // Guest order
-      if (method === 'credit') {
-        return NextResponse.json({
-          error: 'عفواً، خاصية الشراء بالدفع الآجل تتطلب تسجيل الدخول بحساب تاجر معتمد ومفعل له الائتمان'
-        }, { status: 401 });
-      }
+    const customerId = user.id;
+    const { data: prof } = await adminClient.from('profiles').select('*').eq('id', user.id).maybeSingle();
+    const customerProfile = prof;
 
-      const cleanPhone = contactPhoneClean(contact_phone);
-      if (cleanPhone) {
-        const { data: existingProf } = await adminClient
-          .from('profiles')
-          .select('*')
-          .eq('phone', cleanPhone)
-          .maybeSingle();
-
-        if (existingProf) {
-          customerId = existingProf.id;
-          customerProfile = existingProf;
-        }
-      }
-
-      if (!customerId) {
-        const newGuestId = crypto.randomUUID();
-        const nextCustCode = await getNextCustomerCode(adminClient, supabase);
-        const guestProfile = {
-          id: newGuestId,
-          full_name: customer_name?.trim() || 'عميل جديد',
-          store_name: store_name?.trim() || customer_name?.trim() || 'متجر جديد',
-          phone: cleanPhone || null,
-          address: delivery_address || shipping_address || '',
-          role: 'customer',
-          customer_code: nextCustCode,
-          credit_limit: 0,
-          current_debt: 0,
-          previous_balance: 0,
-          is_credit_enabled: false,
-          credit_enabled: false,
-          created_at: new Date().toISOString()
-        };
-
-        try {
-          await adminClient.from('profiles').insert([guestProfile]);
-        } catch (e) {
-          console.error('Failed to insert guest profile:', e);
-        }
-
-        customerId = newGuestId;
-        customerProfile = guestProfile;
-      }
+    if (!customerProfile) {
+      return NextResponse.json({
+        error: 'عفواً، لم يتم العثور على ملف تعريف التاجر المسجل'
+      }, { status: 401 });
     }
 
     // 2. Validate requested quantity against stock limit and check if product is paused
@@ -463,50 +420,6 @@ export async function POST(req: NextRequest) {
       }));
 
       await adminClient.from('order_items').insert(formattedOrderItems);
-    }
-
-    // If customer paid surplus cash over total in a credit order, record payment voucher & update profile debt immediately
-    if (method === 'credit' && surplusDebtPayment > 0 && customerId) {
-      const recNum = `REC-${Date.now().toString().slice(-6)}`;
-      const surplusPayload: any = {
-        id: crypto.randomUUID(),
-        customer_id: customerId,
-        customer_code: customerProfile?.customer_code || customer_code,
-        amount: surplusDebtPayment,
-        receipt_number: recNum,
-        payment_method: 'cash',
-        notes: `سداد مديونية سابقة من مقدم طلب الفاتورة #${nextInvoiceNumber}`,
-        payment_date: new Date().toISOString(),
-        created_at: new Date().toISOString()
-      };
-
-      try {
-        const { error: insErr } = await adminClient.from('customer_payments').insert([surplusPayload]);
-        if (insErr) {
-          delete surplusPayload.receipt_number;
-          await adminClient.from('customer_payments').insert([surplusPayload]);
-        }
-      } catch (errIns) {
-        console.warn('Surplus customer_payments insert error:', errIns);
-      }
-
-      try {
-        await adminClient.from('payments').insert([surplusPayload]);
-      } catch {}
-
-      const newCustomerDebt = Math.max(0, prevBalance - surplusDebtPayment);
-      try {
-        await adminClient.from('profiles').update({
-          current_debt: newCustomerDebt,
-          previous_balance: newCustomerDebt,
-          debt_balance: newCustomerDebt
-        }).eq('id', customerId);
-      } catch {
-        await adminClient.from('profiles').update({
-          current_debt: newCustomerDebt,
-          previous_balance: newCustomerDebt
-        }).eq('id', customerId);
-      }
     }
 
     // Log in audit log

@@ -230,6 +230,12 @@ export function CartDrawer() {
                   إتمام الطلب (أقل من الحد الأدنى)
                 </button>
               </div>
+            ) : !profile && !loadingProfile ? (
+              <Link href="/login?redirect=/checkout" onClick={toggleCart}>
+                <Button variant="primary" size="lg" className="w-full btn-accent text-base">
+                  تسجيل الدخول لإتمام الطلب
+                </Button>
+              </Link>
             ) : (
               <Link href="/checkout" onClick={toggleCart}>
                 <Button variant="primary" size="lg" className="w-full btn-accent text-base">

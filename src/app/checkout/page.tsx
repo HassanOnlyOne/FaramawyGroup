@@ -35,17 +35,18 @@ export default function CheckoutPage() {
         const supabase = createClient();
         const { data: { user } } = await supabase.auth.getUser();
 
-        let currentProf: any = null;
-
-        if (user) {
-          const profRes = await supabase
-            .from('profiles')
-            .select('id, full_name, store_name, phone, address, credit_limit, current_debt, previous_balance, is_credit_enabled, credit_enabled, customer_code')
-            .eq('id', user.id)
-            .maybeSingle();
-
-          currentProf = profRes.data;
+        if (!user) {
+          router.push('/login?redirect=/checkout');
+          return;
         }
+
+        const profRes = await supabase
+          .from('profiles')
+          .select('id, full_name, store_name, phone, address, credit_limit, current_debt, previous_balance, is_credit_enabled, credit_enabled, customer_code')
+          .eq('id', user.id)
+          .maybeSingle();
+
+        const currentProf = profRes.data;
 
         if (currentProf) {
           const debtFromProfile = Number(currentProf.current_debt !== undefined && currentProf.current_debt !== null ? currentProf.current_debt : (currentProf.previous_balance || 0));
@@ -54,7 +55,7 @@ export default function CheckoutPage() {
 
           setCurrentDebt(debtFromProfile);
           setProfile(currentProf);
-          setCustomerName(currentProf.store_name || currentProf.full_name || currentProf.name || '');
+          setCustomerName(currentProf.store_name || currentProf.full_name || '');
           setContactPhone(currentProf.phone || '');
           setDeliveryAddress(currentProf.address || '');
 
@@ -71,10 +72,8 @@ export default function CheckoutPage() {
             setPaymentMethod('credit');
           }
         } else {
-          // Guest / Unauthenticated visitor
-          setProfile(null);
-          setCurrentDebt(0);
-          setPaymentMethod('cash');
+          router.push('/login?redirect=/checkout');
+          return;
         }
       } catch (err) {
         console.error('Checkout load data error:', err);
@@ -83,7 +82,7 @@ export default function CheckoutPage() {
       }
     }
     loadData();
-  }, [setPaymentMethod]);
+  }, [setPaymentMethod, router]);
 
   const creditLimit = Number(profile?.credit_limit || 0);
   const availableCredit = Math.max(0, creditLimit - currentDebt);
@@ -125,13 +124,15 @@ export default function CheckoutPage() {
       return;
     }
 
+    // Strictly require logged-in profile
+    if (!profile) {
+      setError('عفواً، يجب تسجيل الدخول بحساب تاجر مسجل لإتمام طلب التوريد.');
+      router.push('/login?redirect=/checkout');
+      return;
+    }
+
     // Strict Credit Limit Validation on remaining credit amount ONLY
     if (paymentMethod === 'credit') {
-      if (!profile) {
-        setError('عفواً، خاصية الشراء والدفع الآجل متاحة فقط للتجار المسجلين والمعتمدين. يرجى تسجيل الدخول أو اختيار الدفع كاش.');
-        return;
-      }
-
       if (!isCreditAllowed) {
         setError('خاصية الشراء والدفع الآجل غير مفعلة لحسابك حالياً. يرجى اختيار الدفع نقداً عند الاستلام.');
         return;
@@ -213,7 +214,7 @@ export default function CheckoutPage() {
 
       const data = await res.json().catch(() => ({}));
 
-      if (res.status === 401 && paymentMethod === 'credit') {
+      if (res.status === 401) {
         router.push('/login?redirect=/checkout');
         return;
       }
@@ -258,23 +259,6 @@ export default function CheckoutPage() {
                 ← تصفح بضائع الجملة لإضافة أصناف أخرى
               </Link>
             </div>
-          </div>
-        )}
-
-        {/* Guest Notification if not logged in */}
-        {!profile && !loading && (
-          <div className="p-4 bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800 text-blue-900 dark:text-blue-200 rounded-2xl flex items-center justify-between gap-3 text-xs sm:text-sm">
-            <div className="flex items-center gap-2">
-              <Info className="w-5 h-5 shrink-0 text-blue-600 dark:text-blue-400" />
-              <span>أنت تطلب كـ <strong>زائر جديد (دفع كاش)</strong>. هل تمتلك حساب تاجر مسجل؟</span>
-            </div>
-            <Link
-              href="/login?redirect=/checkout"
-              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs flex items-center gap-1 shrink-0 transition-colors"
-            >
-              <LogIn className="w-3.5 h-3.5" />
-              <span>تسجيل الدخول</span>
-            </Link>
           </div>
         )}
 

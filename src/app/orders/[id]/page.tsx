@@ -463,21 +463,73 @@ export default function OrderDetailPage() {
 
               <div className="flex justify-between text-slate-700 dark:text-slate-300 font-bold pt-1">
                 <span>طريقة السداد:</span>
-                <span>{order.payment_method === 'credit' ? 'أجل (حساب تاجر معتمد)' : 'كاش نقداً عند الاستلام'}</span>
+                <span>{(order.payment_method === 'credit' || order.payment_method === 'آجل') ? 'أجل (حساب تاجر معتمد)' : 'كاش نقداً عند الاستلام'}</span>
               </div>
 
-              {order.payment_method === 'credit' && (
-                <>
-                  <div className="flex justify-between text-slate-600 dark:text-slate-400">
-                    <span>المبلغ المسدد كاش:</span>
-                    <span className="font-mono font-bold text-emerald-600">{formatPriceShort(order.paid_amount || 0)}</span>
+              {(() => {
+                const ordPaid = Number(order.paid_amount || 0);
+                const ordTotal = Number(order.total !== undefined && order.total !== null ? order.total : (order.total_amount || 0));
+                const ordPrevDebt = Number(order.previous_balance || order.customer?.previous_balance || 0);
+                const isCreditOrder = order.payment_method === 'credit' || order.payment_method === 'آجل';
+                const ordSurplus = (isCreditOrder && ordPaid > ordTotal) ? (ordPaid - ordTotal) : 0;
+                const ordRemaining = isCreditOrder
+                  ? (ordPaid >= ordTotal ? 0 : Math.max(0, ordTotal - ordPaid))
+                  : 0;
+                const expectedPostOrderDebt = isCreditOrder
+                  ? Math.max(0, ordPrevDebt + ordRemaining - ordSurplus)
+                  : ordPrevDebt;
+
+                if (isCreditOrder) {
+                  return (
+                    <>
+                      <div className="flex justify-between text-slate-600 dark:text-slate-400">
+                        <span>المبلغ المسدد كاش:</span>
+                        <span className="font-mono font-bold text-emerald-600">{formatPriceShort(ordPaid)}</span>
+                      </div>
+
+                      {ordSurplus > 0 && (
+                        <div className="flex justify-between text-emerald-700 dark:text-emerald-300 font-bold bg-emerald-50 dark:bg-emerald-950/40 p-2 rounded-xl border border-emerald-200 dark:border-emerald-800 text-xs">
+                          <span>✓ سداد من المديونية السابقة:</span>
+                          <span className="font-mono font-black">-{formatPriceShort(ordSurplus)}</span>
+                        </div>
+                      )}
+
+                      {ordRemaining > 0 ? (
+                        <div className="flex justify-between text-orange-700 dark:text-orange-400 font-bold bg-orange-50 dark:bg-orange-950/40 p-2 rounded-xl border border-orange-200 dark:border-orange-900/50">
+                          <span>المتبقي الآجل على الحساب:</span>
+                          <span className="font-mono font-black">{formatPriceShort(ordRemaining)}</span>
+                        </div>
+                      ) : (
+                        <div className="flex justify-between text-emerald-700 dark:text-emerald-400 font-bold bg-emerald-50/50 dark:bg-emerald-950/30 p-2 rounded-xl border border-emerald-200 dark:border-emerald-900/40">
+                          <span>المتبقي الآجل من الفاتورة:</span>
+                          <span className="font-mono font-black">0 ج.م (مسددة بالكامل ✓)</span>
+                        </div>
+                      )}
+
+                      {ordPrevDebt > 0 && (
+                        <div className="flex justify-between text-slate-600 dark:text-slate-400 pt-1 border-t border-slate-100 dark:border-slate-800">
+                          <span>المديونية السابقة المسجلة:</span>
+                          <span className="font-mono font-bold">{formatPriceShort(ordPrevDebt)}</span>
+                        </div>
+                      )}
+
+                      <div className="flex justify-between text-slate-900 dark:text-white font-black pt-2 border-t border-slate-200 dark:border-slate-700 text-xs">
+                        <span>الرصيد المتوقع بعد الفاتورة:</span>
+                        <span className="font-mono font-black text-sm text-brand-700 dark:text-emerald-400">
+                          {formatPriceShort(expectedPostOrderDebt)}
+                        </span>
+                      </div>
+                    </>
+                  );
+                }
+
+                return ordPrevDebt > 0 ? (
+                  <div className="flex justify-between text-slate-600 dark:text-slate-400 pt-1 border-t border-slate-100 dark:border-slate-800">
+                    <span>مديونيتك السابقة (تظل كما هي):</span>
+                    <span className="font-mono font-bold">{formatPriceShort(ordPrevDebt)}</span>
                   </div>
-                  <div className="flex justify-between text-orange-700 dark:text-orange-400 font-bold bg-orange-50 dark:bg-orange-950/40 p-2 rounded-xl border border-orange-200 dark:border-orange-900/50">
-                    <span>المتبقي الآجل على الحساب:</span>
-                    <span className="font-mono font-black">{formatPriceShort(order.remaining_amount !== undefined ? order.remaining_amount : Math.max(0, Number(order.total || 0) - Number(order.paid_amount || 0)))}</span>
-                  </div>
-                </>
-              )}
+                ) : null;
+              })()}
             </div>
           </div>
 

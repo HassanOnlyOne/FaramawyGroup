@@ -190,10 +190,15 @@ export function ElfarmawyInvoice({ order }: InvoiceProps) {
           <div className="bg-emerald-50 p-3 text-center border-l border-slate-300">
             <span className="text-emerald-800 font-bold block mb-1">المدفوع مقدماً (كاش)</span>
             <p className="font-black text-base text-emerald-700 font-mono">{formatPriceShort(paidCash)}</p>
+            {surplusCash > 0 && (
+              <span className="text-[9px] text-emerald-800 font-bold block mt-0.5">(سداد {formatPriceShort(surplusCash)} مديونية)</span>
+            )}
           </div>
           <div className="bg-orange-50 p-3 text-center border-l border-slate-300">
             <span className="text-orange-800 font-bold block mb-1">المبلغ المتبقي (آجل)</span>
-            <p className="font-black text-base text-orange-700 font-mono">{formatPriceShort(remainingDebt)}</p>
+            <p className="font-black text-base text-orange-700 font-mono">
+              {surplusCash > 0 ? '0 ج.م' : formatPriceShort(remainingDebt)}
+            </p>
           </div>
           <div className="bg-slate-50 p-3 text-center border-l border-slate-300">
             <span className="text-slate-600 font-bold block mb-1">الرصيد السابق للعميل</span>
