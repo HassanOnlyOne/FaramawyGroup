@@ -236,9 +236,62 @@ async function handleAdminOrderUpdate(req: NextRequest, id: string) {
       updatedOrder = fbRes.data || { ...existingOrder, ...updatePayload };
     }
 
-    // Cumulative recalculation of customer debt in profiles
+    // Cumulative recalculation of customer debt in profiles & surplus voucher management
     const targetCustomerId = existingOrder.customer_id;
     if (targetCustomerId) {
+      const orderRefStr = existingOrder.invoice_no || existingOrder.order_number || targetOrderId;
+      const effectiveStatus = status !== undefined ? status : existingOrder.status;
+      const isNowCompleted = effectiveStatus === 'completed';
+      const surplus = Math.max(0, finalPaid - finalTotal);
+
+      if (isNowCompleted && finalMethod === 'credit' && surplus > 0) {
+        const { data: existingSurplusList } = await adminClient
+          .from('customer_payments')
+          .select('id')
+          .eq('customer_id', targetCustomerId)
+          .ilike('notes', `%${orderRefStr}%`);
+
+        if (!existingSurplusList || existingSurplusList.length === 0) {
+          const recNum = `REC-${Date.now().toString().slice(-6)}`;
+          const surplusPayload: any = {
+            id: crypto.randomUUID(),
+            customer_id: targetCustomerId,
+            customer_code: existingOrder.customer_code,
+            amount: surplus,
+            receipt_number: recNum,
+            payment_method: 'cash',
+            notes: `سداد مديونية سابقة من مقدم طلب الفاتورة #${orderRefStr}`,
+            payment_date: new Date().toISOString(),
+            created_at: new Date().toISOString()
+          };
+
+          const { error: insErr } = await adminClient.from('customer_payments').insert([surplusPayload]);
+          if (insErr) {
+            delete surplusPayload.receipt_number;
+            await adminClient.from('customer_payments').insert([surplusPayload]);
+          }
+          try {
+            await adminClient.from('payments').insert([surplusPayload]);
+          } catch {}
+        }
+      } else if (status !== undefined && !isNowCompleted) {
+        // Rollback surplus payment if status moved away from completed
+        const { data: existingSurplusList } = await adminClient
+          .from('customer_payments')
+          .select('id')
+          .eq('customer_id', targetCustomerId)
+          .ilike('notes', `%${orderRefStr}%`);
+
+        if (existingSurplusList && existingSurplusList.length > 0) {
+          for (const sPay of existingSurplusList) {
+            await adminClient.from('customer_payments').delete().eq('id', sPay.id);
+            try {
+              await adminClient.from('payments').delete().eq('id', sPay.id);
+            } catch {}
+          }
+        }
+      }
+
       const [ordRes, payRes] = await Promise.all([
         adminClient
           .from('orders')
@@ -256,14 +309,14 @@ async function handleAdminOrderUpdate(req: NextRequest, id: string) {
 
       const totalCreditOrdersDebt = customerOrders
         .filter((o: any) => {
-          const ordStatus = o.id === targetOrderId ? (status || existingOrder.status) : o.status;
+          const ordStatus = o.id === targetOrderId ? effectiveStatus : o.status;
           return !['pending', 'cancelled', 'returned'].includes(ordStatus);
         })
         .reduce((sum: number, o: any) => {
           if (o.id === targetOrderId) {
             return sum + finalRemaining;
           }
-          const isCredit = o.payment_method === 'credit';
+          const isCredit = o.payment_method === 'credit' || o.payment_method === 'آجل';
           const ordTotal = Number(o.total !== undefined && o.total !== null ? o.total : (o.total_amount || 0));
           const ordPaid = Number(o.paid_amount || 0);
           const rem = Number(o.remaining_amount !== undefined && o.remaining_amount !== null ? o.remaining_amount : (isCredit ? Math.max(0, ordTotal - ordPaid) : 0));
@@ -277,13 +330,10 @@ async function handleAdminOrderUpdate(req: NextRequest, id: string) {
       try {
         await adminClient.from('profiles').update({
           previous_balance: netDebt,
-          current_debt: netDebt,
-          debt_balance: netDebt
+          current_debt: netDebt
         }).eq('id', targetCustomerId);
-      } catch {
-        await adminClient.from('profiles').update({
-          previous_balance: netDebt
-        }).eq('id', targetCustomerId);
+      } catch (errProf) {
+        console.error('Error updating customer debt:', errProf);
       }
     }
 

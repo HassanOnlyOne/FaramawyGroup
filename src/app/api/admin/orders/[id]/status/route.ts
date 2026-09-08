@@ -140,7 +140,7 @@ export async function PATCH(
       updatedOrder = { ...order, status, stock_deducted: willBeDeducted };
     }
 
-    // 4. Handle Credit Surplus Cash Payment & Deduct From Previous Debt
+    // 4. Handle Credit Surplus Cash Payment & Reversal (Rollback)
     const targetCustomerId = order.customer_id;
     if (targetCustomerId) {
       const orderMethod = order.payment_method;
@@ -148,50 +148,75 @@ export async function PATCH(
       const orderPaid = Number(order.paid_amount || 0);
       const orderTotal = Number(order.total !== undefined && order.total !== null ? order.total : (order.total_amount || 0));
       const surplus = Math.max(0, orderPaid - orderTotal);
+      const orderRefStr = order.invoice_no || order.order_number || actualOrderId;
 
-      if (isNowCompleted && isCredit && surplus > 0) {
-        const orderRefStr = order.invoice_no || order.order_number || actualOrderId;
-        
-        // Check if surplus payment voucher was already created
-        const { data: existingSurplusPay } = await adminClient
-          .from('customer_payments')
-          .select('id')
-          .eq('customer_id', targetCustomerId)
-          .ilike('notes', `%${orderRefStr}%`)
-          .maybeSingle();
-
-        if (!existingSurplusPay) {
-          const recNum = `REC-${Date.now().toString().slice(-6)}`;
-          const surplusPayload: any = {
-            id: crypto.randomUUID(),
-            customer_id: targetCustomerId,
-            customer_code: order.customer_code,
-            amount: surplus,
-            receipt_number: recNum,
-            payment_method: 'cash',
-            notes: `سداد مديونية سابقة من مقدم طلب الفاتورة #${orderRefStr}`,
-            payment_date: new Date().toISOString(),
-            created_at: new Date().toISOString()
-          };
-
-          const { error: insErr } = await adminClient
+      if (isNowCompleted) {
+        // --- CASE 1: Status changed TO completed ---
+        if (isCredit && surplus > 0) {
+          // Check if surplus payment voucher was already created (Idempotency)
+          const { data: existingSurplusList } = await adminClient
             .from('customer_payments')
-            .insert([surplusPayload]);
+            .select('id')
+            .eq('customer_id', targetCustomerId)
+            .ilike('notes', `%${orderRefStr}%`);
 
-          if (insErr) {
-            delete surplusPayload.receipt_number;
-            await adminClient.from('customer_payments').insert([surplusPayload]);
+          if (!existingSurplusList || existingSurplusList.length === 0) {
+            const recNum = `REC-${Date.now().toString().slice(-6)}`;
+            const surplusPayload: any = {
+              id: crypto.randomUUID(),
+              customer_id: targetCustomerId,
+              customer_code: order.customer_code,
+              amount: surplus,
+              receipt_number: recNum,
+              payment_method: 'cash',
+              notes: `سداد مديونية سابقة من مقدم طلب الفاتورة #${orderRefStr}`,
+              payment_date: new Date().toISOString(),
+              created_at: new Date().toISOString()
+            };
+
+            const { error: insErr } = await adminClient
+              .from('customer_payments')
+              .insert([surplusPayload]);
+
+            if (insErr) {
+              delete surplusPayload.receipt_number;
+              await adminClient.from('customer_payments').insert([surplusPayload]);
+            }
+
+            try {
+              await adminClient.from('payments').insert([surplusPayload]);
+            } catch {}
+
+            // Audit log for surplus debt payment
+            await logAction({
+              actionType: 'سداد مديونية سابقة',
+              category: 'الخزينة والتحصيلات',
+              details: `خصم ${surplus} ج.م من المديونية السابقة للعميل كفائض مسدد من مقدم طلب الفاتورة #${orderRefStr}`,
+              user: { id: targetCustomerId, name: order.customer_name || 'العميل', role: 'customer' }
+            });
+          }
+        }
+      } else {
+        // --- CASE 2: Status changed FROM completed to any non-completed status (Rollback / Reversal) ---
+        const { data: existingSurplusList } = await adminClient
+          .from('customer_payments')
+          .select('id, amount, receipt_number')
+          .eq('customer_id', targetCustomerId)
+          .ilike('notes', `%${orderRefStr}%`);
+
+        if (existingSurplusList && existingSurplusList.length > 0) {
+          for (const sPay of existingSurplusList) {
+            await adminClient.from('customer_payments').delete().eq('id', sPay.id);
+            try {
+              await adminClient.from('payments').delete().eq('id', sPay.id);
+            } catch {}
           }
 
-          try {
-            await adminClient.from('payments').insert([surplusPayload]);
-          } catch {}
-
-          // Audit log for surplus debt payment
+          // Audit log for reversal
           await logAction({
-            actionType: 'سداد مديونية سابقة',
+            actionType: 'إلغاء سند سداد مديونية',
             category: 'الخزينة والتحصيلات',
-            details: `خصم ${surplus} ج.م من المديونية السابقة للعميل كفائض مسدد من مقدم طلب الفاتورة #${orderRefStr}`,
+            details: `إلغاء سند سداد مديونية سابقة للفاتورة #${orderRefStr} وإعادة الرصيد للعميل بسبب تغيير حالة الطلب إلى (${status})`,
             user: { id: targetCustomerId, name: order.customer_name || 'العميل', role: 'customer' }
           });
         }
@@ -230,13 +255,10 @@ export async function PATCH(
       try {
         await adminClient.from('profiles').update({
           previous_balance: netDebt,
-          current_debt: netDebt,
-          debt_balance: netDebt
+          current_debt: netDebt
         }).eq('id', targetCustomerId);
-      } catch {
-        await adminClient.from('profiles').update({
-          previous_balance: netDebt
-        }).eq('id', targetCustomerId);
+      } catch (errProf) {
+        console.error('Error updating profile debt:', errProf);
       }
     }
 
