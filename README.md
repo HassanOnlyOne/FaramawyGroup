@@ -1,36 +1,25 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Faramawy Group — B2B Wholesale & ERP Management Platform
 
-## Getting Started
+A full-stack B2B e-commerce, inventory, and enterprise resource planning (ERP) system tailored for wholesale distribution and supply chain management. Built with **Next.js (App Router)**, **TypeScript**, and **Supabase (PostgreSQL)**.
 
-First, run the development server:
+## 🚀 Key Features & Architecture
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+- **Multi-Role Access Control (RBAC):** Granular permission system supporting `Super Owner`, `Admin/Manager`, `Sales Delegate`, `Warehouse Staff`, and `Verified Merchant/Customer`.
+- **Order & Supply Chain Engine:** Real-time order processing, custom invoice generation, automated stock deduction, and delivery status tracking.
+- **Financial & Credit Ledger:** Support for both Cash-on-Delivery (COD) and merchant credit limits, tracking previous balances, partial payments, and payment vouchers.
+- **Real-Time Inventory & Auditing:** Stock level monitoring, low-stock alerts, category management, and a comprehensive system-wide **Audit Log** tracking all administrative actions.
+- **Database Security & Integrity:** Enforced via Supabase Row-Level Security (RLS) policies, custom PL/pgSQL triggers, and automated schema synchronization.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## 🛠️ Tech Stack
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- **Frontend:** Next.js, React, TypeScript, Tailwind CSS, Lucide Icons
+- **Backend:** Next.js API Routes, Supabase Auth & Admin SDK
+- **Database:** PostgreSQL (Supabase), PL/pgSQL Functions & Triggers, RLS Policies
+- **Deployment:** Vercel (CI/CD)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## 📌 Active Development Roadmap
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- [ ] Advanced analytics dashboard for delegate sales performance and route optimization.
+- [ ] Automated PDF invoice and financial statement exports.
+- [ ] Batch inventory import/export via CSV/Excel with validation pipelines.
+- [ ] Webhook integrations for real-time WhatsApp/SMS order status notifications.
